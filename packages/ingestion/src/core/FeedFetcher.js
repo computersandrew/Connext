@@ -109,7 +109,7 @@ export class FeedFetcher {
    */
   _buildHeaders(auth) {
     const headers = {
-      "Accept-Encoding": "gzip, deflate",
+      "Accept-Encoding": "identity",
       "User-Agent": "Connext-Ingestion/1.0",
     };
 

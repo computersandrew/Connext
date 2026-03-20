@@ -102,7 +102,11 @@ export class BaseAdapter {
       // Delegate parsing to the adapter's implementation
       const entities = [];
       for (const buffer of buffers) {
-        const parsed = this.parseFeed(feedType, buffer);
+	// Debug: log first bytes of each buffer
+        if (this.id === "mta") {
+       	   this.logger.info({ feedType, size: buffer.length, firstBytes: buffer.slice(0, 10).toString("hex") }, "MTA buffer debug");
+     	} 
+        const parsed = await this.parseFeed(feedType, buffer);
         entities.push(...parsed);
       }
 

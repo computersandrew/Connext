@@ -34,8 +34,8 @@ export default class MbtaAdapter extends BaseAdapter {
     }
   }
 
-  parseFeed(feedType, buffer) {
-    const feed = decodeFeed(buffer);
+  async parseFeed(feedType, buffer) {
+    const feed = await decodeFeed(buffer);
     switch (feedType) {
       case "tripUpdates": return extractTripUpdates(feed);
       case "vehiclePositions": return extractVehiclePositions(feed);

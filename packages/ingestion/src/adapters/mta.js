@@ -37,8 +37,8 @@ export default class MtaAdapter extends BaseAdapter {
     }
   }
 
-  parseFeed(feedType, buffer) {
-    const feed = decodeFeed(buffer);
+  async parseFeed(feedType, buffer) {
+    const feed = await decodeFeed(buffer);
 
     switch (feedType) {
       case "tripUpdates":

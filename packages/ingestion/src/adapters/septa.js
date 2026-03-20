@@ -316,8 +316,8 @@ export default class SeptaAdapter extends BaseAdapter {
   //  GTFS-RT FALLBACK — BaseAdapter still polls these if configured
   // ═══════════════════════════════════════════════════════════════════════════
 
-  parseFeed(feedType, buffer) {
-    const feed = decodeFeed(buffer);
+  async parseFeed(feedType, buffer) {
+    const feed = await decodeFeed(buffer);
     switch (feedType) {
       case "tripUpdates": return extractTripUpdates(feed);
       case "vehiclePositions": return extractVehiclePositions(feed);
