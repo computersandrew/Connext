@@ -1,4 +1,4 @@
-# connext
+# conneXt
 
 Modular transit wayfinder app with real-time GTFS data and connection probability engine.
 
