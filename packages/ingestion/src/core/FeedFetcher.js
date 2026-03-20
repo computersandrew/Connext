@@ -33,6 +33,7 @@ export class FeedFetcher {
           headers,
           signal: AbortSignal.timeout(this.config.fetchTimeoutMs),
           maxRedirections: 3,
+	  autoSelectFamily: true,
         });
 
         if (statusCode === 429) {
@@ -66,7 +67,14 @@ export class FeedFetcher {
           chunks.push(chunk);
         }
 
-        return Buffer.concat(chunks);
+	let buffer = Buffer.concat(chunks);
+
+	if (buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b) {
+		const { gunzipSync } = await import("zlib");
+		buffer = gunzipSync(buffer);
+	}
+
+        return buffer;
 
       } catch (err) {
         lastError = err;

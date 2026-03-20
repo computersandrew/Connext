@@ -124,11 +124,12 @@ export class BaseAdapter {
       await this.onFeedProcessed(feedType, normalized, elapsed);
 
     } catch (err) {
+      const error = err || new Error("Unknown feed error");
       this._stats.errorCount++;
       this._stats.lastErrorAt = new Date().toISOString();
-      this._stats.lastError = err.message;
-      this.logger.error({ err, feedType }, `Feed error: ${feedType}`);
-      this.onFeedError(feedType, err);
+      this._stats.lastError = error.message || String(error);
+      this.logger.error({ err: error, feedType }, `Feed error: ${feedType}`);
+      this.onFeedError(feedType, error);
     }
   }
 
