@@ -30,7 +30,7 @@ export const SYSTEMS = {
         "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Fsubway-alerts",
       ],
     },
-    auth: { type: "header", headerName: "x-api-key", envVar: "MTA_API_KEY" },
+    auth: { type: "none"},
     intervals: { tripUpdates: 15000, vehiclePositions: 30000, alerts: 60000 },
     staticGtfs: {
       url: "http://web.mta.info/developers/data/nyct/subway/google_transit.zip",
