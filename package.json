@@ -1,0 +1,14 @@
+{
+  "name": "connext",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Modular transit wayfinder with connection probability engine",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "ingestion": "npm -w packages/ingestion start",
+    "ingestion:dev": "npm -w packages/ingestion run dev",
+    "validate": "npm -w packages/ingestion run validate"
+  }
+}
