@@ -100,14 +100,19 @@ export class BaseAdapter {
       );
 
       // Delegate parsing to the adapter's implementation
+      // Delegate parsing to the adapter's implementation
+      // Parse each buffer individually — skip any that fail (e.g. XML error pages)
       const entities = [];
-      for (const buffer of buffers) {
-	// Debug: log first bytes of each buffer
-        if (this.id === "mta") {
-       	   this.logger.info({ feedType, size: buffer.length, firstBytes: buffer.slice(0, 10).toString("hex") }, "MTA buffer debug");
-     	} 
-        const parsed = await this.parseFeed(feedType, buffer);
-        entities.push(...parsed);
+      for (let i = 0; i < buffers.length; i++) {
+        try {
+          const parsed = await this.parseFeed(feedType, buffers[i]);
+          entities.push(...parsed);
+        } catch (parseErr) {
+          this.logger.warn(
+            { feedType, bufferIndex: i, size: buffers[i].length, err: parseErr.message },
+            `Skipping unparseable buffer ${i} (${buffers[i].length} bytes)`
+          );
+        }
       }
 
       // Transform through the adapter's normalizer
