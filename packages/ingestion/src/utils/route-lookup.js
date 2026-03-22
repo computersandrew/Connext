@@ -76,6 +76,16 @@ export class RouteLookup {
   getRoute(routeId) { return this.routes.get(routeId) || null; }
   getStop(stopId) { return this.stops.get(stopId) || null; }
   getTrip(tripId) { return this.trips.get(tripId) || null; }
+  
+
+  getStopByName(name) {
+    for (const [id, stop] of this._stops) {
+      if (stop.name && stop.name.toLowerCase() === name.toLowerCase()) {
+        return { id, ...stop };
+      }
+    }
+    return null;
+  }
 
   /**
    * Resolve a trip to its route info. Returns route data or a fallback.

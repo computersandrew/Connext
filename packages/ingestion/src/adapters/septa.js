@@ -232,44 +232,55 @@ export default class SeptaAdapter extends BaseAdapter {
         const url = `${SEPTA_API.arrivals}?station=${encodeURIComponent(station)}&results=10`;
         const resp = await this._jsonGet(url);
 
-        // Response is { "Northbound": [...], "Southbound": [...] }
-        // or { "station_name": { "Northbound": [...], "Southbound": [...] } }
-        let directions = resp;
-        if (resp && typeof resp === "object" && !resp.Northbound && !resp.Southbound) {
-          // Might be wrapped in station name key
-          const keys = Object.keys(resp);
-          if (keys.length > 0) directions = resp[keys[0]];
-        }
-
+        // Response: { "Station Departures: date": [ { "Northbound": [...], "Southbound": [...] } ] }
         const departures = [];
+        const outerKey = Object.keys(resp || {})[0];
+        if (!outerKey) continue;
 
-        for (const [direction, trains] of Object.entries(directions || {})) {
+        const wrapper = resp[outerKey];
+        const directionObj = Array.isArray(wrapper) ? wrapper[0] : wrapper;
+        if (!directionObj) continue;
+
+        for (const [direction, trains] of Object.entries(directionObj)) {
           if (!Array.isArray(trains)) continue;
 
           for (const train of trains) {
             const routeInfo = this._resolveRoute(train.line || "RR");
-            const delay = this._parseDelay(train.late || train.status);
+            const delay = this._parseDelay(train.status);
 
             departures.push({
-              tripId: String(train.train_id || train.trainno || ""),
+              tripId: String(train.train_id || ""),
               routeId: train.line || "RR",
-              routeName: train.line || "Regional Rail",
+              routeName: routeInfo.name,
               routeColor: routeInfo.color,
               routeType: "rail",
               stopId: station.replace(/\s+/g, "_").toLowerCase(),
               stopName: station,
-              direction: `${direction} → ${train.destination || train.dest || ""}`,
+              direction: `${direction} → ${train.destination || ""}`,
               departureTime: train.depart_time ? this._parseTime(train.depart_time) : null,
               delay: delay,
               isRealtime: true,
+              _track: train.track || null,
+              _platform: train.platform || null,
+              _status: train.status || null,
             });
           }
         }
 
         if (departures.length > 0) {
-          const key = `departures:${this.id}:station:${station.replace(/\s+/g, "_").toLowerCase()}`;
           departures.sort((a, b) => (a.departureTime || Infinity) - (b.departureTime || Infinity));
-          pipeline.setex(key, ttl, JSON.stringify(departures));
+          const stationKey = station.replace(/\s+/g, "_").toLowerCase();
+
+          // Write both station-name key and GTFS stop ID key
+          pipeline.setex(`departures:${this.id}:station:${stationKey}`, ttl, JSON.stringify(departures));
+
+          // Also look up the GTFS stop ID for this station and write there too
+          if (this.lookup) {
+            const gtfsStop = this.lookup.getStopByName(station);
+            if (gtfsStop) {
+              pipeline.setex(`departures:${this.id}:${gtfsStop.id}`, ttl, JSON.stringify(departures));
+            }
+          }
         }
       } catch (err) {
         this.logger.debug({ station, err: err.message }, `Arrivals fetch failed for ${station}`);

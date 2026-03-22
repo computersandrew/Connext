@@ -8,12 +8,79 @@
 import { getJSON, getKeys, getMultiJSON } from "../redis.js";
 import { SYSTEMS } from "../config.js";
 
-export default async function departureRoutes(fastify) {
+// Cache of parent → child stop mappings
+const childStopCache = new Map();
+
+async function getChildStops(pg, system, stopId) {
+  if (!pg) return [stopId];
+
+  const cacheKey = `${system}:${stopId}`;
+  if (childStopCache.has(cacheKey)) return childStopCache.get(cacheKey);
+
+  try {
+    const result = await pg.query(
+      `SELECT stop_id FROM gtfs_stops
+       WHERE system_id = $1 AND (parent_station = $2 OR stop_id = $2)`,
+      [system, stopId]
+    );
+    const ids = result.rows.map((r) => r.stop_id);
+    // Include the original ID too
+    const allIds = [...new Set([stopId, ...ids])];
+    childStopCache.set(cacheKey, allIds);
+    return allIds;
+  } catch {
+    return [stopId];
+  }
+}
+
+async function findDepartures(system, stopId, pg) {
+  // 1. Try exact match first
+  let departures = await getJSON(`departures:${system}:${stopId}`);
+  if (departures && departures.length > 0) return departures;
+
+  // 2. Try station name key
+  departures = await getJSON(`departures:${system}:station:${stopId}`);
+  if (departures && departures.length > 0) return departures;
+
+  // 3. Resolve parent station to child stops and check all
+  const childIds = await getChildStops(pg, system, stopId);
+  if (childIds.length > 1) {
+    const keys = childIds.map((id) => `departures:${system}:${id}`);
+    const results = await getMultiJSON(keys);
+    const all = results.flat().filter(Boolean);
+    if (all.length > 0) return all;
+  }
+  
+  // 4. Try looking up the stop name and searching by station name key
+  if (pg) {
+    try {
+      const nameResult = await pg.query(
+        `SELECT stop_name FROM gtfs_stops WHERE system_id = $1 AND stop_id = $2 LIMIT 1`,
+        [system, stopId]
+      );
+      if (nameResult.rows.length > 0) {
+        const stationKey = nameResult.rows[0].stop_name.replace(/\s+/g, "_").toLowerCase();
+        const stationDeps = await getJSON(`departures:${system}:station:${stationKey}`);
+        if (stationDeps && stationDeps.length > 0) return stationDeps;
+      }
+    } catch {}
+  }
+  // 4. Fuzzy: search Redis keys containing this stop ID
+  const keys = await getKeys(`departures:${system}:*${stopId}*`);
+  if (keys.length > 0) {
+    const results = await getMultiJSON(keys);
+    return results.flat().filter(Boolean);
+  }
+
+  return [];
+}
+
+export default async function departureRoutes(fastify, { pg }) {
 
   // Departures at a specific stop
   fastify.get("/api/v1/departures/:system/:stop", async (req, reply) => {
     const { system, stop } = req.params;
-    const limit = parseInt(req.query.limit || "10");
+    const limit = parseInt(req.query.limit || "20");
     const routeFilter = req.query.route || null;
 
     if (!SYSTEMS[system]) {
@@ -23,22 +90,7 @@ export default async function departureRoutes(fastify) {
       });
     }
 
-    // Try exact stop_id match first
-    let departures = await getJSON(`departures:${system}:${stop}`);
-
-    // Try station-name key (SEPTA uses this format)
-    if (!departures) {
-      departures = await getJSON(`departures:${system}:station:${stop}`);
-    }
-
-    // Try fuzzy search across keys if exact match fails
-    if (!departures) {
-      const keys = await getKeys(`departures:${system}:*${stop}*`);
-      if (keys.length > 0) {
-        const allDeps = await getMultiJSON(keys);
-        departures = allDeps.flat();
-      }
-    }
+    let departures = await findDepartures(system, stop, pg);
 
     if (!departures || departures.length === 0) {
       return reply.code(404).send({
@@ -57,6 +109,15 @@ export default async function departureRoutes(fastify) {
       );
     }
 
+    // Deduplicate by tripId (child stops may have overlapping data)
+    const seen = new Set();
+    departures = departures.filter((d) => {
+      const key = d.tripId || `${d.routeId}-${d.departureTime}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
     // Sort by departure time and limit
     const now = Math.floor(Date.now() / 1000);
     departures = departures
@@ -65,7 +126,7 @@ export default async function departureRoutes(fastify) {
         secondsAway: d.departureTime ? d.departureTime - now : null,
         minutesAway: d.departureTime ? Math.max(0, Math.round((d.departureTime - now) / 60)) : null,
       }))
-      .filter((d) => d.secondsAway === null || d.secondsAway > -60) // exclude trains that left >1 min ago
+      .filter((d) => d.secondsAway === null || d.secondsAway > -60)
       .sort((a, b) => (a.departureTime || Infinity) - (b.departureTime || Infinity))
       .slice(0, limit);
 
@@ -78,21 +139,18 @@ export default async function departureRoutes(fastify) {
     };
   });
 
-  // List available stops with departures (for discovery)
+  // List available stops with departures
   fastify.get("/api/v1/departures/:system", async (req, reply) => {
     const { system } = req.params;
 
     if (!SYSTEMS[system]) {
-      return reply.code(404).send({
-        error: "SYSTEM_NOT_FOUND",
-        message: `System "${system}" is not supported.`,
-      });
+      return reply.code(404).send({ error: "SYSTEM_NOT_FOUND" });
     }
 
     const keys = await getKeys(`departures:${system}:*`);
     const stops = keys
       .map((k) => k.replace(`departures:${system}:`, ""))
-      .filter((s) => !s.startsWith("_")) // exclude _summary keys
+      .filter((s) => !s.startsWith("_"))
       .sort();
 
     return {
@@ -119,11 +177,9 @@ export default async function departureRoutes(fastify) {
 
     fastify.log.info({ clientId, system, stop }, "WS departures client connected");
 
-    // Send departures immediately and then every 5 seconds
     const sendUpdate = async () => {
       try {
-        let departures = await getJSON(`departures:${system}:${stop}`);
-        if (!departures) departures = await getJSON(`departures:${system}:station:${stop}`);
+        let departures = await findDepartures(system, stop, pg);
         if (!departures) departures = [];
 
         if (routeFilter) {
@@ -132,6 +188,15 @@ export default async function departureRoutes(fastify) {
             d.routeId?.toUpperCase() === rf || d.routeName?.toUpperCase() === rf
           );
         }
+
+        // Deduplicate
+        const seen = new Set();
+        departures = departures.filter((d) => {
+          const key = d.tripId || `${d.routeId}-${d.departureTime}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
 
         const now = Math.floor(Date.now() / 1000);
         departures = departures
@@ -142,43 +207,31 @@ export default async function departureRoutes(fastify) {
           }))
           .filter((d) => d.secondsAway === null || d.secondsAway > -60)
           .sort((a, b) => (a.departureTime || Infinity) - (b.departureTime || Infinity))
-          .slice(0, 10);
+          .slice(0, 15);
 
         socket.send(JSON.stringify({
           type: "departures",
-          system: system,
-          stop: stop,
+          system,
+          stop,
           departures,
           count: departures.length,
           timestamp: Date.now(),
         }));
-      } catch (err) {
-        // Client may have disconnected
-      }
+      } catch {}
     };
 
     sendUpdate();
     interval = setInterval(sendUpdate, 5000);
 
-    // Handle client messages (route filter)
     socket.on("message", (raw) => {
       try {
         const msg = JSON.parse(raw.toString());
-        if (msg.route !== undefined) {
-          routeFilter = msg.route || null;
-          sendUpdate(); // refresh with new filter
-        }
-        if (msg.type === "ping") {
-          socket.send(JSON.stringify({ type: "pong", timestamp: Date.now() }));
-        }
+        if (msg.route !== undefined) { routeFilter = msg.route || null; sendUpdate(); }
+        if (msg.type === "ping") socket.send(JSON.stringify({ type: "pong", timestamp: Date.now() }));
       } catch {}
     });
 
-    socket.on("close", () => {
-      clearInterval(interval);
-      fastify.log.info({ clientId }, "WS departures client disconnected");
-    });
-
+    socket.on("close", () => { clearInterval(interval); });
     socket.on("error", () => clearInterval(interval));
   });
 }

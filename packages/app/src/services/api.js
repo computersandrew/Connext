@@ -1,8 +1,7 @@
 // src/services/api.js
-const API_BASE = "http://129.161.196.239:3000";
-const WS_BASE = "ws://129.161.196.239:3000";
+const API_BASE = "http://129.161.196.135:3000";
+const WS_BASE = "ws://129.161.196.135:3000";
 
-// ─── REST helpers ────────────────────────────────────────────────────────────
 async function get(path) {
   try {
     const res = await fetch(`${API_BASE}${path}`, {
@@ -21,17 +20,13 @@ async function get(path) {
   }
 }
 
-// ─── Endpoints ───────────────────────────────────────────────────────────────
 export const api = {
-  // Health
   health: () => get("/api/v1/health"),
   systems: () => get("/api/v1/systems"),
 
-  // Alerts
   alerts: () => get("/api/v1/alerts"),
   alertsBySystem: (system) => get(`/api/v1/alerts/${system}`),
 
-  // Departures
   departureStops: (system) => get(`/api/v1/departures/${system}`),
   departures: (system, stop, opts = {}) => {
     const params = new URLSearchParams();
@@ -41,7 +36,25 @@ export const api = {
     return get(`/api/v1/departures/${system}/${stop}${qs ? "?" + qs : ""}`);
   },
 
-  // Route planner
+  // Stop name search (from PostgreSQL GTFS data)
+  searchStops: (system, query) => get(`/api/v1/stops/${system}/search?q=${encodeURIComponent(query)}`),
+
+  // Search across all systems
+  searchAllStops: async (query) => {
+    const systems = ["mta", "mbta", "cta", "septa"];
+    const results = [];
+    const promises = systems.map(async (sys) => {
+      try {
+        const data = await get(`/api/v1/stops/${sys}/search?q=${encodeURIComponent(query)}`);
+        for (const stop of (data.stops || [])) {
+          results.push({ system: sys, ...stop });
+        }
+      } catch {}
+    });
+    await Promise.all(promises);
+    return results;
+  },
+
   plan: (system, from, to, opts = {}) => {
     const params = new URLSearchParams({ from, to });
     if (opts.depart) params.set("depart", opts.depart);
@@ -49,56 +62,28 @@ export const api = {
     return get(`/api/v1/plan/${system}?${params}`);
   },
 
-  // Transfers
   transfer: (system, fromStop, toStop) =>
     get(`/api/v1/transfer/${system}/${fromStop}/${toStop}`),
 };
 
-// ─── WebSocket helpers ───────────────────────────────────────────────────────
 export function connectAlertStream(systems = [], onMessage) {
   const ws = new WebSocket(`${WS_BASE}/ws/alerts`);
-
-  ws.onopen = () => {
-    if (systems.length > 0) {
-      ws.send(JSON.stringify({ systems }));
-    }
-  };
-
+  ws.onopen = () => { if (systems.length > 0) ws.send(JSON.stringify({ systems })); };
   ws.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      if (data.type !== "heartbeat") {
-        onMessage(data);
-      }
-    } catch {}
+    try { const data = JSON.parse(event.data); if (data.type !== "heartbeat") onMessage(data); } catch {}
   };
-
   ws.onerror = () => {};
-  ws.onclose = () => {
-    // Auto-reconnect after 5s
-    setTimeout(() => connectAlertStream(systems, onMessage), 5000);
-  };
-
+  ws.onclose = () => { setTimeout(() => connectAlertStream(systems, onMessage), 5000); };
   return ws;
 }
 
 export function connectDepartureStream(system, stop, onMessage) {
   const ws = new WebSocket(`${WS_BASE}/ws/departures/${system}/${stop}`);
-
   ws.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      if (data.type === "departures") {
-        onMessage(data);
-      }
-    } catch {}
+    try { const data = JSON.parse(event.data); if (data.type === "departures") onMessage(data); } catch {}
   };
-
   ws.onerror = () => {};
-  ws.onclose = () => {
-    setTimeout(() => connectDepartureStream(system, stop, onMessage), 5000);
-  };
-
+  ws.onclose = () => { setTimeout(() => connectDepartureStream(system, stop, onMessage), 5000); };
   return ws;
 }
 
