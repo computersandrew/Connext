@@ -60,7 +60,7 @@ export const SYSTEMS = {
     name: "CTA",
     city: "Chicago",
     region: { lat: 41.8781, lng: -87.6298, radiusKm: 40 },
-    enabled: true,
+    enabled: false,
     adapter: "cta",
     feeds: {
       tripUpdates: ["https://www.transitchicago.com/api/1.0/gtfs/tripupdates.aspx"],
