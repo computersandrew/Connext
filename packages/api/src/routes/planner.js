@@ -88,6 +88,9 @@ export default async function plannerRoutes(fastify, { pg }) {
     }
 
     // ─── 2. One-transfer routes ───────────────────────────────────────────
+    // Transfers can happen two ways:
+    //   a) Same stop ID appears on both routes (direct edge match)
+    //   b) Different stop IDs share a parent station (cross-platform transfer)
     try {
       const transferResult = await pg.query(`
         WITH from_routes AS (
@@ -99,16 +102,38 @@ export default async function plannerRoutes(fastify, { pg }) {
           SELECT DISTINCT route_id
           FROM route_graph
           WHERE system_id = $1 AND (from_stop_id = ANY($3) OR to_stop_id = ANY($3))
+        ),
+        -- Find transfer points: stops on route1 that share a parent station with stops on route2
+        transfer_points AS (
+          -- Case A: exact same stop ID
+          SELECT DISTINCT
+            fr.route_id AS route1, tr.route_id AS route2,
+            rg1.to_stop_id AS transfer_stop_1, rg2.from_stop_id AS transfer_stop_2
+          FROM from_routes fr
+          JOIN route_graph rg1 ON rg1.system_id = $1 AND rg1.route_id = fr.route_id
+          JOIN route_graph rg2 ON rg2.system_id = $1 AND rg1.to_stop_id = rg2.from_stop_id
+          JOIN to_routes tr ON rg2.route_id = tr.route_id
+          WHERE fr.route_id != tr.route_id
+
+          UNION ALL
+
+          -- Case B: different stop IDs, same parent station
+          SELECT DISTINCT
+            fr.route_id AS route1, tr.route_id AS route2,
+            rg1.to_stop_id AS transfer_stop_1, rg2.from_stop_id AS transfer_stop_2
+          FROM from_routes fr
+          JOIN route_graph rg1 ON rg1.system_id = $1 AND rg1.route_id = fr.route_id
+          JOIN gtfs_stops s1 ON rg1.system_id = s1.system_id AND rg1.to_stop_id = s1.stop_id
+          JOIN gtfs_stops s2 ON s1.system_id = s2.system_id
+            AND s1.parent_station != '' AND s1.parent_station = s2.parent_station
+            AND s1.stop_id != s2.stop_id
+          JOIN route_graph rg2 ON rg2.system_id = $1 AND s2.stop_id = rg2.from_stop_id
+          JOIN to_routes tr ON rg2.route_id = tr.route_id
+          WHERE fr.route_id != tr.route_id
         )
-        SELECT DISTINCT ON (fr.route_id, tr.route_id)
-          fr.route_id AS route1,
-          tr.route_id AS route2,
-          rg1.to_stop_id AS transfer_stop
-        FROM from_routes fr
-        JOIN route_graph rg1 ON rg1.system_id = $1 AND rg1.route_id = fr.route_id
-        JOIN route_graph rg2 ON rg2.system_id = $1 AND rg1.to_stop_id = rg2.from_stop_id
-        JOIN to_routes tr ON rg2.route_id = tr.route_id
-        WHERE fr.route_id != tr.route_id
+        SELECT DISTINCT ON (route1, route2)
+          route1, route2, transfer_stop_1 AS transfer_stop
+        FROM transfer_points
         LIMIT 10
       `, [system, fromStops, toStops]);
 
@@ -295,11 +320,15 @@ async function getRouteInfo(pg, system, routeId) {
 
 async function getStopName(pg, system, stopId) {
   try {
+    // Try to get the parent station name (more user-friendly)
     const result = await pg.query(
-      `SELECT stop_name FROM gtfs_stops WHERE system_id = $1 AND stop_id = $2 LIMIT 1`,
+      `SELECT s.stop_name, p.stop_name AS parent_name
+       FROM gtfs_stops s
+       LEFT JOIN gtfs_stops p ON s.system_id = p.system_id AND s.parent_station = p.stop_id
+       WHERE s.system_id = $1 AND s.stop_id = $2 LIMIT 1`,
       [system, stopId]
     );
-    return result.rows[0]?.stop_name || stopId;
+    return result.rows[0]?.parent_name || result.rows[0]?.stop_name || stopId;
   } catch {
     return stopId;
   }

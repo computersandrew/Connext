@@ -1,4 +1,4 @@
-# conneXt
+# connext
 
 Modular transit wayfinder app with real-time GTFS data, connection probability engine, and platform-aware transfers.
 
@@ -14,7 +14,7 @@ Modular transit wayfinder app with real-time GTFS data, connection probability e
 | **API Server** | ✅ Running | REST + WebSocket, 11 endpoints |
 | **Transfer Engine** | ✅ Loaded | 36 manual overrides across 4 systems |
 | **React Native App** | ⏳ Planned | — |
-| **Production Deploy** | ⏳ Planned | french slander |
+| **Production Deploy** | ⏳ Planned | Ubuntu Server at office |
 
 ### Transit Systems
 
