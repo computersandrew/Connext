@@ -10,7 +10,8 @@
     "add-system": "node scripts/scaffold-adapter.js",
     "test": "node --test tests/",
     "validate": "node scripts/validate-adapters.js",
-    "import-gtfs": "node scripts/import-gtfs.js"
+    "import-gtfs": "node scripts/import-gtfs.js",
+    "import-stop-times": "node scripts/import-stop-times.js"
   },
   "dependencies": {
     "gtfs-realtime-bindings": "^1.1.1",
