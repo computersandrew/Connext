@@ -1,91 +1,121 @@
 // App.js
-import { useState, useEffect } from "react";
-import { View, Text, TextInput, Pressable, StatusBar, Keyboard } from "react-native";
+import { useState, useEffect, useRef } from "react";
+import { View, Text, TextInput, Pressable, StatusBar, Animated } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-AsyncStorage.clear();
 import Navigation from "./src/navigation";
 import { colors, spacing, fontSize, radius } from "./src/theme";
 
 function OnboardingName({ onNext }) {
   const [name, setName] = useState("");
+  const fadeIn = useRef(new Animated.Value(0)).current;
+  const slideUp = useRef(new Animated.Value(30)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeIn, { toValue: 1, duration: 600, useNativeDriver: true }),
+      Animated.timing(slideUp, { toValue: 0, duration: 600, useNativeDriver: true }),
+    ]).start();
+  }, []);
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: "center", padding: spacing.xl }}>
-      {/* Progress */}
+    <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: "center", padding: spacing.xl + 8 }}>
       <View style={{ flexDirection: "row", justifyContent: "center", gap: 6, position: "absolute", top: 60, left: 0, right: 0 }}>
-        <View style={{ width: 24, height: 5, borderRadius: 3, backgroundColor: colors.text }} />
-        <View style={{ width: 6, height: 5, borderRadius: 3, backgroundColor: colors.cardActive }} />
+        <View style={{ width: 24, height: 4, borderRadius: 2, backgroundColor: colors.text }} />
+        <View style={{ width: 6, height: 4, borderRadius: 2, backgroundColor: colors.cardActive }} />
       </View>
 
-      <Text style={{ fontSize: 42, fontWeight: "800", color: colors.text, textAlign: "center", letterSpacing: -1, marginBottom: 6 }}>
-        conneXt
-      </Text>
-      <Text style={{ fontSize: 14, color: colors.textSecondary, textAlign: "center", marginBottom: 56 }}>
-        Your transit, simplified.
-      </Text>
+      <Animated.View style={{ opacity: fadeIn, transform: [{ translateY: slideUp }] }}>
+        <Text style={{ fontSize: 44, fontWeight: "800", color: colors.text, textAlign: "center", letterSpacing: -1.5, marginBottom: 8 }}>
+          conneXt
+        </Text>
+        <Text style={{ fontSize: 15, color: colors.textSecondary, textAlign: "center", marginBottom: 56, letterSpacing: 0.3 }}>
+          Your transit, simplified.
+        </Text>
 
-      <Text style={{ fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 1.2, color: colors.textSecondary, marginBottom: 8 }}>
-        What should we call you?
-      </Text>
-      <TextInput
-        style={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.cardBorder, borderRadius: radius.md, padding: 14, color: colors.text, fontSize: 16 }}
-        value={name} onChangeText={setName} placeholder="Your name" placeholderTextColor={colors.textMuted}
-        autoFocus returnKeyType="next" onSubmitEditing={() => name.trim() && onNext(name.trim())}
-      />
-      <Pressable onPress={() => name.trim() && onNext(name.trim())} style={{
-        backgroundColor: name.trim() ? colors.accent : colors.card, borderRadius: radius.md,
-        padding: 14, alignItems: "center", marginTop: 20, opacity: name.trim() ? 1 : 0.4,
-      }}>
-        <Text style={{ color: name.trim() ? colors.bg : colors.textMuted, fontSize: 15, fontWeight: "600" }}>Continue</Text>
-      </Pressable>
+        <Text style={{ fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 1.5, color: colors.textMuted, marginBottom: 10 }}>
+          What should we call you?
+        </Text>
+        <TextInput
+          style={{
+            backgroundColor: colors.card, borderWidth: 1, borderColor: colors.cardBorder,
+            borderRadius: radius.lg, paddingHorizontal: 18, paddingVertical: 16,
+            color: colors.text, fontSize: 17, letterSpacing: 0.2,
+          }}
+          value={name} onChangeText={setName} placeholder="Your name" placeholderTextColor={colors.textMuted}
+          autoFocus returnKeyType="next" onSubmitEditing={() => name.trim() && onNext(name.trim())}
+        />
+
+        <Pressable onPress={() => name.trim() && onNext(name.trim())} style={{
+          backgroundColor: name.trim() ? colors.accent : colors.card, borderRadius: radius.lg,
+          paddingVertical: 16, alignItems: "center", marginTop: 24, opacity: name.trim() ? 1 : 0.4,
+        }}>
+          <Text style={{ color: name.trim() ? colors.bg : colors.textMuted, fontSize: 16, fontWeight: "600", letterSpacing: 0.3 }}>Continue</Text>
+        </Pressable>
+      </Animated.View>
     </View>
   );
 }
 
 function OnboardingPace({ name, onComplete }) {
   const [pace, setPace] = useState("average");
+  const fadeIn = useRef(new Animated.Value(0)).current;
+  const slideUp = useRef(new Animated.Value(30)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeIn, { toValue: 1, duration: 500, useNativeDriver: true }),
+      Animated.timing(slideUp, { toValue: 0, duration: 500, useNativeDriver: true }),
+    ]).start();
+  }, []);
+
   const paces = [
     { id: "slow", label: "Relaxed", desc: "I take my time", icon: "🚶" },
-    { id: "average", label: "Average", desc: "Normal pace", icon: "🚶‍♂️" },
+    { id: "average", label: "Average", desc: "Normal walking pace", icon: "🚶‍♂️" },
     { id: "fast", label: "Fast", desc: "I walk with purpose", icon: "🏃" },
   ];
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: "center", padding: spacing.xl }}>
+    <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: "center", padding: spacing.xl + 8 }}>
       <View style={{ flexDirection: "row", justifyContent: "center", gap: 6, position: "absolute", top: 60, left: 0, right: 0 }}>
-        <View style={{ width: 6, height: 5, borderRadius: 3, backgroundColor: colors.cardActive }} />
-        <View style={{ width: 24, height: 5, borderRadius: 3, backgroundColor: colors.text }} />
+        <View style={{ width: 6, height: 4, borderRadius: 2, backgroundColor: colors.cardActive }} />
+        <View style={{ width: 24, height: 4, borderRadius: 2, backgroundColor: colors.text }} />
       </View>
 
-      <Text style={{ fontSize: 22, fontWeight: "700", color: colors.text, marginBottom: 6 }}>
-        How do you walk, {name}?
-      </Text>
-      <Text style={{ fontSize: 14, color: colors.textSecondary, marginBottom: 36 }}>
-        Helps estimate time to your stop.
-      </Text>
+      <Animated.View style={{ opacity: fadeIn, transform: [{ translateY: slideUp }] }}>
+        <Text style={{ fontSize: 24, fontWeight: "700", color: colors.text, marginBottom: 8, letterSpacing: -0.5 }}>
+          How do you walk, {name}?
+        </Text>
+        <Text style={{ fontSize: 15, color: colors.textSecondary, marginBottom: 36, letterSpacing: 0.2 }}>
+          Helps estimate time to your stop.
+        </Text>
 
-      {paces.map((p) => (
-        <Pressable key={p.id} onPress={() => setPace(p.id)} style={{
-          flexDirection: "row", alignItems: "center", gap: 14, padding: 14,
-          borderRadius: radius.md, marginBottom: 8,
-          backgroundColor: pace === p.id ? "#1a1a1f" : "transparent",
-          borderWidth: 1, borderColor: pace === p.id ? colors.cardActive : "transparent",
+        {paces.map((p) => (
+          <Pressable key={p.id} onPress={() => setPace(p.id)} style={{
+            flexDirection: "row", alignItems: "center", gap: 16, paddingVertical: 16, paddingHorizontal: 16,
+            borderRadius: radius.lg, marginBottom: 10,
+            backgroundColor: pace === p.id ? colors.card : "transparent",
+            borderWidth: 1, borderColor: pace === p.id ? colors.cardBorder : "transparent",
+          }}>
+            <Text style={{ fontSize: 26 }}>{p.icon}</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 16, fontWeight: "600", color: colors.text, letterSpacing: 0.2 }}>{p.label}</Text>
+              <Text style={{ fontSize: 13, color: colors.textSecondary, marginTop: 2 }}>{p.desc}</Text>
+            </View>
+            {pace === p.id && (
+              <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: colors.green + "20", alignItems: "center", justifyContent: "center" }}>
+                <Text style={{ color: colors.green, fontSize: 13, fontWeight: "700" }}>✓</Text>
+              </View>
+            )}
+          </Pressable>
+        ))}
+
+        <Pressable onPress={() => onComplete(pace)} style={{
+          backgroundColor: colors.accent, borderRadius: radius.lg,
+          paddingVertical: 16, alignItems: "center", marginTop: 28,
         }}>
-          <Text style={{ fontSize: 24 }}>{p.icon}</Text>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 15, fontWeight: "600", color: colors.text }}>{p.label}</Text>
-            <Text style={{ fontSize: 12, color: colors.textSecondary }}>{p.desc}</Text>
-          </View>
-          {pace === p.id && <Text style={{ color: colors.green, fontSize: 18 }}>✓</Text>}
+          <Text style={{ color: colors.bg, fontSize: 16, fontWeight: "600", letterSpacing: 0.3 }}>Get Started</Text>
         </Pressable>
-      ))}
-
-      <Pressable onPress={() => onComplete(pace)} style={{
-        backgroundColor: colors.accent, borderRadius: radius.md,
-        padding: 14, alignItems: "center", marginTop: 24,
-      }}>
-        <Text style={{ color: colors.bg, fontSize: 15, fontWeight: "600" }}>Get Started</Text>
-      </Pressable>
+      </Animated.View>
     </View>
   );
 }
@@ -108,7 +138,6 @@ export default function App() {
   }, []);
 
   const handleNameDone = (name) => { setTempName(name); setOnboardingStep(1); };
-
   const handleComplete = async (selectedPace) => {
     await AsyncStorage.setItem("connext_name", tempName);
     await AsyncStorage.setItem("connext_pace", selectedPace);
@@ -117,19 +146,8 @@ export default function App() {
   };
 
   if (loading) return <View style={{ flex: 1, backgroundColor: colors.bg }} />;
+  if (!userName && onboardingStep === 0) return (<><StatusBar barStyle="light-content" /><OnboardingName onNext={handleNameDone} /></>);
+  if (!userName && onboardingStep === 1) return (<><StatusBar barStyle="light-content" /><OnboardingPace name={tempName} onComplete={handleComplete} /></>);
 
-  if (!userName && onboardingStep === 0) return (
-    <><StatusBar barStyle="light-content" /><OnboardingName onNext={handleNameDone} /></>
-  );
-
-  if (!userName && onboardingStep === 1) return (
-    <><StatusBar barStyle="light-content" /><OnboardingPace name={tempName} onComplete={handleComplete} /></>
-  );
-
-  return (
-    <>
-      <StatusBar barStyle="light-content" />
-      <Navigation userName={userName} pace={pace} />
-    </>
-  );
+  return (<><StatusBar barStyle="light-content" /><Navigation userName={userName} pace={pace} /></>);
 }

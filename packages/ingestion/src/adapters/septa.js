@@ -34,7 +34,7 @@ const SEPTA_API = {
 const TRANSIT_ROUTES = ["MFL", "BSL", "NHSL", "10", "11", "13", "34", "36", "101", "102"];
 
 // Key stations to poll Arrivals for (gives us departure boards)
-const KEY_STATIONS = [
+let KEY_STATIONS = [
   "Suburban Station", "30th Street Station", "Jefferson Station",
   "Temple University", "Fern Rock Transportation Center",
   "69th Street Transportation Center",
@@ -53,6 +53,17 @@ export default class SeptaAdapter extends BaseAdapter {
     this.logger.info("Loading SEPTA static GTFS data...");
     try {
       await this.lookup.loadFromDb(this.pg, this.id);
+      // Load all SEPTA station names for arrivals polling
+      if (this.lookup.stopCount > 0) {
+        const allNames = [];
+        for (const [id, stop] of this.lookup.stops) {
+          if (stop.name && !allNames.includes(stop.name)) allNames.push(stop.name);
+        }
+        if (allNames.length > 0) {
+          KEY_STATIONS = allNames;
+          this.logger.info(`  Polling arrivals for ${KEY_STATIONS.length} stations`);
+        }
+      }
       this.logger.info(`  Loaded ${this.lookup.routeCount} routes, ${this.lookup.stopCount} stops`);
     } catch (err) {
       this.logger.warn({ err }, "Could not load from DB — running with built-in route data");

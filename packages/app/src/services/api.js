@@ -1,6 +1,6 @@
 // src/services/api.js
-const API_BASE = "http://129.161.196.135:3000";
-const WS_BASE = "ws://129.161.196.135:3000";
+const API_BASE = "http://129.161.196.199:3000";
+const WS_BASE = "ws://129.161.196.199:3000";
 
 async function get(path) {
   try {

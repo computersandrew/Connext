@@ -1,18 +1,19 @@
 // src/theme/index.js
 export const colors = {
-  bg: "#0a0a0b",
-  card: "#151518",
-  cardBorder: "#1f1f25",
-  cardActive: "#2a2a32",
-  text: "#e8e8ec",
-  textSecondary: "#6b6b76",
-  textMuted: "#4a4a56",
-  accent: "#e8e8ec",
-  green: "#22c55e",
-  yellow: "#eab308",
-  red: "#ef4444",
-  blue: "#3b82f6",
+  bg: "#141419",
+  card: "#1c1c24",
+  cardBorder: "#26262f",
+  cardActive: "#32323e",
+  text: "#ededf0",
+  textSecondary: "#8a8a99",
+  textMuted: "#555566",
+  accent: "#ededf0",
+  green: "#34d399",
+  yellow: "#fbbf24",
+  red: "#f87171",
+  blue: "#60a5fa",
   amber: "#f59e0b",
+  purple: "#a78bfa",
 };
 
 export const spacing = {
@@ -38,7 +39,7 @@ export const radius = {
   sm: 8,
   md: 12,
   lg: 16,
-  xl: 20,
+  xl: 24,
   pill: 99,
 };
 

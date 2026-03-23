@@ -18,7 +18,8 @@ export default function Navigation({ userName, pace }) {
         headerTintColor: colors.text,
         headerShadowVisible: false,
         contentStyle: { backgroundColor: colors.bg },
-        headerTitleStyle: { fontWeight: "600", fontSize: 16 },
+        headerTitleStyle: { fontWeight: "600", fontSize: 17, letterSpacing: -0.3 },
+        animation: "slide_from_right",
       }}>
         <Stack.Screen name="Home" options={{ headerShown: false }}>
           {(props) => <HomeScreen {...props} userName={userName} pace={pace} />}
