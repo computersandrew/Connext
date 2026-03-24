@@ -14,7 +14,7 @@ Modular transit wayfinder app with real-time GTFS data, connection probability e
 | **API Server** | ✅ Running | REST + WebSocket, 11 endpoints |
 | **Transfer Engine** | ✅ Loaded | 36 manual overrides across 4 systems |
 | **React Native App** | ⏳ Planned | — |
-| **Production Deploy** | ⏳ Planned | Ubuntu Server at office |
+| **Production Deploy** | ⏳ Planned | *insert french revolution |
 
 ### Transit Systems
 
@@ -22,7 +22,7 @@ Modular transit wayfinder app with real-time GTFS data, connection probability e
 |--------|------|-----------|-------------|-------|
 | **MTA** | New York City | ✅ Live | GTFS-RT protobuf (7/8 feeds working) | SIR feed returns XML, skipped gracefully |
 | **MBTA** | Boston | ✅ Live | GTFS-RT protobuf | All feeds working |
-| **CTA** | Chicago | ⏳ Pending | GTFS-RT protobuf | Waiting on API key approval |
+| **CTA** | Chicago | Yo Chicago Homies got this | GTFS-RT protobuf | Waiting on API key approval |
 | **SEPTA** | Philadelphia | ✅ Live | Hybrid: JSON APIs (primary) + GTFS-RT (fallback) | TrainView, TransitView, Arrivals, Alerts |
 
 ---
