@@ -25,6 +25,7 @@ Modular transit wayfinder app with real-time GTFS data, connection probability e
 | **MBTA** | Boston | ✅ Live | 11,703 edges, 7,299 stops | GTFS-RT protobuf |
 | **CTA** | Chicago | ✅ Live | 14,304 edges, 10,945 stops | Train Tracker JSON API (hybrid) |
 | **SEPTA** | Philadelphia | ✅ Live | 440 edges, 156 stops | JSON APIs + GTFS-RT (hybrid) |
+| **CDTA** | Capital Region | i'm waiting still for their live api :cry: | x stops | TBD
 
 ### Data Pipeline
 
