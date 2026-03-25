@@ -94,6 +94,26 @@ export const SYSTEMS = {
       refreshDays: 14,
     },
   },
+
+  cdta: {
+    id: "cdta",
+    name: "CDTA",
+    city: "Albany/Troy",
+    region: { lat: 42.6526, lng: -73.7562, radiusKm: 40 },
+    enabled: true,
+    adapter: "cdta",
+    feeds: {
+      tripUpdates: [],
+      vehiclePositions: [],
+      alerts: [],
+    },
+    auth: { type: "none" },
+    intervals: { tripUpdates: 30000, vehiclePositions: 30000, alerts: 60000 },
+    staticGtfs: {
+      url: "https://www.cdta.org/schedules/google_transit.zip",
+      refreshDays: 14,
+    },
+  },
 };
 
 // Global config

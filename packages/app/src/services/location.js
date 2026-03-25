@@ -7,6 +7,7 @@ const SYSTEM_REGIONS = [
   { id: "mbta",  name: "MBTA",  lat: 42.3601, lng: -71.0589, radiusKm: 40 },
   { id: "cta",   name: "CTA",   lat: 41.8781, lng: -87.6298, radiusKm: 30 },
   { id: "septa", name: "SEPTA", lat: 39.9526, lng: -75.1652, radiusKm: 30 },
+  { id: "cdta",  name: "CDTA",  lat: 42.6526, lng: -73.7562, radiusKm: 70 },
 ];
 
 function haversineKm(lat1, lon1, lat2, lon2) {

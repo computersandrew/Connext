@@ -313,6 +313,7 @@ async function resolveStopIds(pg, system, stopId) {
 
 async function estimateRideTime(pg, system, routeId, fromStops, toStops) {
   try {
+    // Method 1: direct stop_times lookup (fastest, most accurate)
     const result = await pg.query(`
       SELECT MIN(arrive_sec - depart_sec) AS travel_sec
       FROM (
@@ -341,7 +342,25 @@ async function estimateRideTime(pg, system, routeId, fromStops, toStops) {
       WHERE arrive_sec > depart_sec
     `, [system, routeId, fromStops, toStops]);
 
-    return result.rows[0]?.travel_sec || 300;
+    if (result.rows[0]?.travel_sec) return result.rows[0].travel_sec;
+
+    // Method 2: recursive graph traversal — sum edge weights along the route
+    const graphResult = await pg.query(`
+      WITH RECURSIVE path AS (
+        SELECT from_stop_id, to_stop_id, avg_travel_seconds, 1 as hops
+        FROM route_graph
+        WHERE system_id = $1 AND route_id = $2 AND from_stop_id = ANY($3)
+        UNION ALL
+        SELECT rg.from_stop_id, rg.to_stop_id, p.avg_travel_seconds + rg.avg_travel_seconds, p.hops + 1
+        FROM route_graph rg
+        JOIN path p ON rg.from_stop_id = p.to_stop_id
+        WHERE rg.system_id = $1 AND rg.route_id = $2 AND p.hops < 50
+      )
+      SELECT MIN(avg_travel_seconds) as travel_sec
+      FROM path WHERE to_stop_id = ANY($4)
+    `, [system, routeId, fromStops, toStops]);
+
+    return graphResult.rows[0]?.travel_sec || 300;
   } catch {
     return 300;
   }

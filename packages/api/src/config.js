@@ -16,6 +16,7 @@ export const SYSTEMS = {
   mbta:  { id: "mbta",  name: "MBTA",  city: "Boston" },
   cta:   { id: "cta",   name: "CTA",   city: "Chicago" },
   septa: { id: "septa", name: "SEPTA", city: "Philadelphia" },
+  cdta:  { id: "cdta", name: "CDTA", city: "Albany/Troy" },
 };
 
 export const WS_CONFIG = {

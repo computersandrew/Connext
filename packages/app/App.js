@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from "react";
 import { View, Text, TextInput, Pressable, StatusBar, Animated } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+AsyncStorage.clear();
 import Navigation from "./src/navigation";
 import { colors, spacing, fontSize, radius } from "./src/theme";
 
