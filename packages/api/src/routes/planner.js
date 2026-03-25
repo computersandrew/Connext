@@ -130,6 +130,22 @@ export default async function plannerRoutes(fastify, { pg }) {
           JOIN route_graph rg2 ON rg2.system_id = $1 AND s2.stop_id = rg2.from_stop_id
           JOIN to_routes tr ON rg2.route_id = tr.route_id
           WHERE fr.route_id != tr.route_id
+
+          UNION ALL
+
+          -- Case C: different stop IDs, same stop NAME (MTA has multiple parent IDs per station)
+          SELECT DISTINCT
+            fr.route_id AS route1, tr.route_id AS route2,
+            rg1.to_stop_id AS transfer_stop_1, rg2.from_stop_id AS transfer_stop_2
+          FROM from_routes fr
+          JOIN route_graph rg1 ON rg1.system_id = $1 AND rg1.route_id = fr.route_id
+          JOIN gtfs_stops s1 ON rg1.system_id = s1.system_id AND rg1.to_stop_id = s1.stop_id
+          JOIN gtfs_stops s2 ON s1.system_id = s2.system_id
+            AND s1.stop_name = s2.stop_name
+            AND s1.stop_id != s2.stop_id
+          JOIN route_graph rg2 ON rg2.system_id = $1 AND s2.stop_id = rg2.from_stop_id
+          JOIN to_routes tr ON rg2.route_id = tr.route_id
+          WHERE fr.route_id != tr.route_id
         )
         SELECT DISTINCT ON (route1, route2)
           route1, route2, transfer_stop_1 AS transfer_stop
@@ -259,11 +275,39 @@ export default async function plannerRoutes(fastify, { pg }) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function resolveStopIds(pg, system, stopId) {
+  // Step 1: direct match + children by parent_station
   const result = await pg.query(
     `SELECT stop_id FROM gtfs_stops WHERE system_id = $1 AND (stop_id = $2 OR parent_station = $2)`,
     [system, stopId]
   );
   const ids = result.rows.map((r) => r.stop_id);
+  if (ids.length > 0) {
+    // Check if any of these are actually in the route graph
+    const graphCheck = await pg.query(
+      `SELECT DISTINCT from_stop_id FROM route_graph WHERE system_id = $1 AND from_stop_id = ANY($2) LIMIT 1`,
+      [system, ids]
+    );
+    if (graphCheck.rows.length > 0) return ids;
+  }
+
+  // Step 2: find by stop name (for MBTA where parent linkage is broken)
+  const nameResult = await pg.query(
+    `SELECT stop_name FROM gtfs_stops WHERE system_id = $1 AND stop_id = $2 LIMIT 1`,
+    [system, stopId]
+  );
+  if (nameResult.rows.length > 0) {
+    const name = nameResult.rows[0].stop_name;
+    const nameMatches = await pg.query(
+      `SELECT s.stop_id FROM gtfs_stops s
+       JOIN route_graph rg ON s.system_id = rg.system_id AND s.stop_id = rg.from_stop_id
+       WHERE s.system_id = $1 AND s.stop_name = $2`,
+      [system, name]
+    );
+    if (nameMatches.rows.length > 0) {
+      return nameMatches.rows.map((r) => r.stop_id);
+    }
+  }
+
   return ids.length > 0 ? ids : [stopId];
 }
 
