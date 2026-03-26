@@ -72,6 +72,52 @@ async function findDepartures(system, stopId, pg) {
     return results.flat().filter(Boolean);
   }
 
+  // Fallback: schedule-based departures from stop_times (for static-only systems like CDTA)
+  if (pg) {
+    try {
+      const now = new Date();
+      const currentTime = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:00`;
+      const result = await pg.query(`
+        SELECT st.trip_id, st.stop_id, st.departure_time, t.route_id, t.trip_headsign
+        FROM gtfs_stop_times st
+        JOIN gtfs_trips t ON st.system_id = t.system_id AND st.trip_id = t.trip_id
+        WHERE st.system_id = $1 AND st.stop_id = $2
+          AND st.departure_time >= $3
+        ORDER BY st.departure_time
+        LIMIT 15
+      `, [system, stopId, currentTime]);
+
+      if (result.rows.length > 0) {
+        // Batch-fetch route info
+        const routeIds = [...new Set(result.rows.map(r => r.route_id))];
+        const routeResult = await pg.query(
+          `SELECT route_id, route_short_name, route_long_name, route_color
+           FROM gtfs_routes WHERE system_id = $1 AND route_id = ANY($2)`,
+          [system, routeIds]
+        );
+        const routeMap = {};
+        for (const r of routeResult.rows) {
+          routeMap[r.route_id] = r;
+        }
+
+        return result.rows.map(row => {
+          const [h,m,s] = row.departure_time.split(':').map(Number);
+          const dep = new Date(now); dep.setHours(h,m,s,0);
+          const route = routeMap[row.route_id] || {};
+          return {
+            tripId: row.trip_id, routeId: row.route_id,
+            routeName: route.route_short_name || route.route_long_name || row.route_id,
+            routeColor: route.route_color ? `#${route.route_color}` : '#123573',
+            routeType: 'bus', stopId: row.stop_id,
+            stopName: '', direction: row.trip_headsign || '',
+            departureTime: Math.floor(dep.getTime() / 1000),
+            delay: null, isRealtime: false,
+          };
+        });
+      }
+    } catch {}
+  }
+
   return [];
 }
 
