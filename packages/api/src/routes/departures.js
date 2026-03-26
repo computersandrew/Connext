@@ -100,7 +100,7 @@ async function findDepartures(system, stopId, pg) {
           routeMap[r.route_id] = r;
         }
 
-        return result.rows.map(row => {
+        const deps = result.rows.map(row => {
           const [h,m,s] = row.departure_time.split(':').map(Number);
           const dep = new Date(now); dep.setHours(h,m,s,0);
           const route = routeMap[row.route_id] || {};
@@ -113,6 +113,14 @@ async function findDepartures(system, stopId, pg) {
             departureTime: Math.floor(dep.getTime() / 1000),
             delay: null, isRealtime: false,
           };
+        });
+        // Deduplicate: one departure per route+time
+        const seen = new Set();
+        return deps.filter(d => {
+          const key = `${d.routeId}-${d.departureTime}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
         });
       }
     } catch {}
