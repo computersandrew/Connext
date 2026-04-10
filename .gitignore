@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 .npm
+.npm-cache/
+.tools/
+.home/
 
 # Environment
 .env

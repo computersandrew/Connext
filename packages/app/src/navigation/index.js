@@ -1,7 +1,7 @@
 // src/navigation/index.js
-import { NavigationContainer } from "@react-navigation/native";
+import { DarkTheme, DefaultTheme, NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import { colors } from "../theme";
+import { useTheme } from "../theme";
 
 import HomeScreen from "../screens/HomeScreen";
 import ResultsScreen from "../screens/ResultsScreen";
@@ -11,8 +11,22 @@ import SettingsScreen from "../screens/SettingsScreen";
 const Stack = createNativeStackNavigator();
 
 export default function Navigation({ userName, pace }) {
+  const { colors, colorScheme } = useTheme();
+  const baseTheme = colorScheme === "dark" ? DarkTheme : DefaultTheme;
+  const navigationTheme = {
+    ...baseTheme,
+    colors: {
+      ...baseTheme.colors,
+      primary: colors.accent,
+      background: colors.bg,
+      card: colors.bg,
+      text: colors.text,
+      border: colors.cardBorder,
+    },
+  };
+
   return (
-    <NavigationContainer>
+    <NavigationContainer theme={navigationTheme}>
       <Stack.Navigator screenOptions={{
         headerStyle: { backgroundColor: colors.bg },
         headerTintColor: colors.text,

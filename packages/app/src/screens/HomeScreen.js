@@ -1,7 +1,7 @@
 // src/screens/HomeScreen.js
 import { useState, useEffect, useRef, useCallback } from "react";
 import { View, Text, TextInput, Pressable, Keyboard, ActivityIndicator, Animated, LayoutAnimation, Platform, UIManager } from "react-native";
-import { colors, spacing, fontSize, radius } from "../theme";
+import { useTheme, spacing, fontSize, radius } from "../theme";
 import { api } from "../services/api";
 import { getLocation, detectSystem } from "../services/location";
 
@@ -19,6 +19,7 @@ function getGreeting(name) {
 }
 
 export default function HomeScreen({ navigation, userName, pace }) {
+  const { colors } = useTheme();
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState([]);
   const [searching, setSearching] = useState(false);

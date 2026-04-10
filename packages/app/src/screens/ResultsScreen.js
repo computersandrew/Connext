@@ -1,7 +1,7 @@
 // src/screens/ResultsScreen.js
 import { useState, useEffect, useRef } from "react";
 import { View, Text, ScrollView, Pressable, ActivityIndicator, Animated } from "react-native";
-import { colors, spacing, fontSize, radius, confidenceColor, urgencyColor } from "../theme";
+import { useTheme, spacing, fontSize, radius, confidenceColor, urgencyColor } from "../theme";
 import { api, connectDepartureStream } from "../services/api";
 import { findNearestStop } from "../services/location";
 import { API_BASE } from "../services/api";
@@ -19,9 +19,10 @@ function LinePill({ name, color, size = 28 }) {
 }
 
 function ProbBadge({ probability }) {
+  const { colors } = useTheme();
   if (probability == null) return null;
   const pct = Math.round(probability * 100);
-  const c = confidenceColor(probability);
+  const c = confidenceColor(probability, colors);
   return (
     <View style={{
       flexDirection: "row", alignItems: "center", gap: 5,
@@ -35,6 +36,7 @@ function ProbBadge({ probability }) {
 }
 
 function TickingCountdown({ departureTime }) {
+  const { colors } = useTheme();
   const [now, setNow] = useState(Math.floor(Date.now() / 1000));
 
   useEffect(() => {
@@ -56,7 +58,7 @@ function TickingCountdown({ departureTime }) {
     <View style={{ alignItems: "flex-end" }}>
       <Text style={{
         fontSize: isImm ? 24 : 20, fontWeight: "700",
-        color: urgencyColor(sec), fontVariant: ["tabular-nums"],
+        color: urgencyColor(sec, colors), fontVariant: ["tabular-nums"],
       }}>
         {min}:{String(remSec).padStart(2, "0")}
       </Text>
@@ -68,6 +70,7 @@ function TickingCountdown({ departureTime }) {
 }
 
 export default function ResultsScreen({ route, navigation, pace }) {
+  const { colors } = useTheme();
   const { system, destinationStopId, destinationName, userLat, userLng } = route.params;
   const [routes, setRoutes] = useState([]);
   const [departures, setDepartures] = useState([]);
@@ -247,7 +250,7 @@ export default function ResultsScreen({ route, navigation, pace }) {
                     </View>
                   );
                   if (leg.type === "transfer") {
-                    const pc = confidenceColor(leg.probability);
+                    const pc = confidenceColor(leg.probability, colors);
                     return (
                       <View key={`t-${li}`} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
                         <View style={{ width: 16, height: 1, backgroundColor: colors.textMuted }} />

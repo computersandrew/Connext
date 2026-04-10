@@ -2,11 +2,11 @@
 import { useState, useEffect, useRef } from "react";
 import { View, Text, TextInput, Pressable, StatusBar, Animated } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-AsyncStorage.clear();
 import Navigation from "./src/navigation";
-import { colors, spacing, fontSize, radius } from "./src/theme";
+import { ThemeProvider, useTheme, spacing, fontSize, radius } from "./src/theme";
 
 function OnboardingName({ onNext }) {
+  const { colors } = useTheme();
   const [name, setName] = useState("");
   const fadeIn = useRef(new Animated.Value(0)).current;
   const slideUp = useRef(new Animated.Value(30)).current;
@@ -58,6 +58,7 @@ function OnboardingName({ onNext }) {
 }
 
 function OnboardingPace({ name, onComplete }) {
+  const { colors } = useTheme();
   const [pace, setPace] = useState("average");
   const fadeIn = useRef(new Animated.Value(0)).current;
   const slideUp = useRef(new Animated.Value(30)).current;
@@ -121,7 +122,8 @@ function OnboardingPace({ name, onComplete }) {
   );
 }
 
-export default function App() {
+function AppContent() {
+  const { colors, colorScheme } = useTheme();
   const [userName, setUserName] = useState(null);
   const [pace, setPace] = useState(null);
   const [onboardingStep, setOnboardingStep] = useState(0);
@@ -146,9 +148,19 @@ export default function App() {
     setPace(selectedPace);
   };
 
-  if (loading) return <View style={{ flex: 1, backgroundColor: colors.bg }} />;
-  if (!userName && onboardingStep === 0) return (<><StatusBar barStyle="light-content" /><OnboardingName onNext={handleNameDone} /></>);
-  if (!userName && onboardingStep === 1) return (<><StatusBar barStyle="light-content" /><OnboardingPace name={tempName} onComplete={handleComplete} /></>);
+  const statusBarStyle = colorScheme === "dark" ? "light-content" : "dark-content";
 
-  return (<><StatusBar barStyle="light-content" /><Navigation userName={userName} pace={pace} /></>);
+  if (loading) return <View style={{ flex: 1, backgroundColor: colors.bg }} />;
+  if (!userName && onboardingStep === 0) return (<><StatusBar barStyle={statusBarStyle} /><OnboardingName onNext={handleNameDone} /></>);
+  if (!userName && onboardingStep === 1) return (<><StatusBar barStyle={statusBarStyle} /><OnboardingPace name={tempName} onComplete={handleComplete} /></>);
+
+  return (<><StatusBar barStyle={statusBarStyle} /><Navigation userName={userName} pace={pace} /></>);
+}
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <AppContent />
+    </ThemeProvider>
+  );
 }

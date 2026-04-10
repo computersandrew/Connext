@@ -1,7 +1,7 @@
 // src/screens/DeparturesScreen.js
 import { useState, useEffect, useRef } from "react";
 import { View, Text, ScrollView, Animated } from "react-native";
-import { colors, spacing, radius, urgencyColor } from "../theme";
+import { useTheme, spacing, radius, urgencyColor } from "../theme";
 import { connectDepartureStream, api } from "../services/api";
 
 function LinePill({ name, color, size = 28 }) {
@@ -14,6 +14,7 @@ function LinePill({ name, color, size = 28 }) {
 }
 
 function TickingCountdown({ departureTime }) {
+  const { colors } = useTheme();
   const [now, setNow] = useState(Math.floor(Date.now() / 1000));
   useEffect(() => {
     const iv = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
@@ -29,7 +30,7 @@ function TickingCountdown({ departureTime }) {
 
   return (
     <View style={{ alignItems: "flex-end" }}>
-      <Text style={{ fontSize: sec <= 60 ? 24 : 20, fontWeight: "700", color: urgencyColor(sec), fontVariant: ["tabular-nums"] }}>
+      <Text style={{ fontSize: sec <= 60 ? 24 : 20, fontWeight: "700", color: urgencyColor(sec, colors), fontVariant: ["tabular-nums"] }}>
         {min}:{String(remSec).padStart(2, "0")}
       </Text>
       <Text style={{ fontSize: 10, color: colors.textMuted, marginTop: 1 }}>{min === 0 ? "seconds" : "min"}</Text>
@@ -38,6 +39,7 @@ function TickingCountdown({ departureTime }) {
 }
 
 export default function DeparturesScreen({ route }) {
+  const { colors } = useTheme();
   const { system, stop, stopName } = route.params;
   const [departures, setDepartures] = useState([]);
   const [loading, setLoading] = useState(true);
