@@ -10,6 +10,7 @@
 //   LOG_LEVEL=debug npm start     # verbose logging
 // ─────────────────────────────────────────────────────────────────────────────
 
+import "dotenv/config";
 import { createRequire } from "module";
 import pino from "pino";
 import Redis from "ioredis";
