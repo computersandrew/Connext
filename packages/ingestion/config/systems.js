@@ -85,7 +85,7 @@ export const SYSTEMS = {
     feeds: {
       tripUpdates: ["https://www3.septa.org/gtfsrt/septa-pa-us/Trip/rtTripUpdates.pb"],
       vehiclePositions: ["https://www3.septa.org/gtfsrt/septa-pa-us/Vehicle/rtVehiclePosition.pb"],
-      alerts: ["https://www3.septa.org/gtfsrt/septa-pa-us/Alert/rtAlerts.pb"],
+      alerts: [], // SEPTA GTFS-RT alerts endpoint is 404; handled by JSON API in SeptaAdapter._fetchAlerts()
     },
     auth: { type: "none" },
     intervals: { tripUpdates: 30000, vehiclePositions: 60000, alerts: 60000 },
