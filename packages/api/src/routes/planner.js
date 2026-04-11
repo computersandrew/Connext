@@ -88,9 +88,10 @@ export default async function plannerRoutes(fastify, { pg }) {
     }
 
     // ─── 2. One-transfer routes ───────────────────────────────────────────
-    // Transfers can happen two ways:
-    //   a) Same stop ID appears on both routes (direct edge match)
-    //   b) Different stop IDs share a parent station (cross-platform transfer)
+    // Groups stops by (route, physical station) so that agencies with separate
+    // inbound/outbound stop IDs (e.g. MBTA) use ALL stop IDs for each route at
+    // the transfer station. Without this, estimateRideTime would start from the
+    // wrong directional stop (e.g. Copley inbound → goes toward downtown, not BC).
     try {
       const transferResult = await pg.query(`
         WITH from_routes AS (
@@ -103,69 +104,58 @@ export default async function plannerRoutes(fastify, { pg }) {
           FROM route_graph
           WHERE system_id = $1 AND (from_stop_id = ANY($3) OR to_stop_id = ANY($3))
         ),
-        -- Find transfer points: stops on route1 that share a parent station with stops on route2
-        transfer_points AS (
-          -- Case A: exact same stop ID
+        -- Collect ALL stop IDs per (route, physical station).
+        -- COALESCE uses parent_station when set (MBTA, SEPTA) or falls back to
+        -- stop_id so that routes sharing a stop ID (MTA) still match correctly.
+        route_station_stops AS (
+          SELECT
+            COALESCE(NULLIF(s.parent_station, ''), s.stop_id) AS station_id,
+            rg.route_id,
+            ARRAY_AGG(DISTINCT rg.from_stop_id) AS stop_ids,
+            MIN(rg.from_stop_id) AS rep_stop_id
+          FROM route_graph rg
+          JOIN gtfs_stops s ON s.system_id = $1 AND s.stop_id = rg.from_stop_id
+          WHERE rg.system_id = $1
+          GROUP BY COALESCE(NULLIF(s.parent_station, ''), s.stop_id), rg.route_id
+        ),
+        -- Any two routes that share a physical station form a transfer candidate.
+        -- Returns stop-ID arrays for BOTH routes so each ride leg uses the correct stops.
+        transfer_candidates AS (
           SELECT DISTINCT
-            fr.route_id AS route1, tr.route_id AS route2,
-            rg1.to_stop_id AS transfer_stop_1, rg2.from_stop_id AS transfer_stop_2
+            fr.route_id  AS route1,
+            rss1.stop_ids AS stops_r1,   -- route1 stops at the transfer station
+            tr.route_id  AS route2,
+            rss2.stop_ids AS stops_r2,   -- route2 stops at the transfer station
+            rss1.rep_stop_id AS transfer_rep
           FROM from_routes fr
-          JOIN route_graph rg1 ON rg1.system_id = $1 AND rg1.route_id = fr.route_id
-          JOIN route_graph rg2 ON rg2.system_id = $1 AND rg1.to_stop_id = rg2.from_stop_id
-          JOIN to_routes tr ON rg2.route_id = tr.route_id
-          WHERE fr.route_id != tr.route_id
-
-          UNION ALL
-
-          -- Case B: different stop IDs, same parent station
-          SELECT DISTINCT
-            fr.route_id AS route1, tr.route_id AS route2,
-            rg1.to_stop_id AS transfer_stop_1, rg2.from_stop_id AS transfer_stop_2
-          FROM from_routes fr
-          JOIN route_graph rg1 ON rg1.system_id = $1 AND rg1.route_id = fr.route_id
-          JOIN gtfs_stops s1 ON rg1.system_id = s1.system_id AND rg1.to_stop_id = s1.stop_id
-          JOIN gtfs_stops s2 ON s1.system_id = s2.system_id
-            AND s1.parent_station != '' AND s1.parent_station = s2.parent_station
-            AND s1.stop_id != s2.stop_id
-          JOIN route_graph rg2 ON rg2.system_id = $1 AND s2.stop_id = rg2.from_stop_id
-          JOIN to_routes tr ON rg2.route_id = tr.route_id
-          WHERE fr.route_id != tr.route_id
-
-          UNION ALL
-
-          -- Case C: different stop IDs, same stop NAME (MTA has multiple parent IDs per station)
-          SELECT DISTINCT
-            fr.route_id AS route1, tr.route_id AS route2,
-            rg1.to_stop_id AS transfer_stop_1, rg2.from_stop_id AS transfer_stop_2
-          FROM from_routes fr
-          JOIN route_graph rg1 ON rg1.system_id = $1 AND rg1.route_id = fr.route_id
-          JOIN gtfs_stops s1 ON rg1.system_id = s1.system_id AND rg1.to_stop_id = s1.stop_id
-          JOIN gtfs_stops s2 ON s1.system_id = s2.system_id
-            AND s1.stop_name = s2.stop_name
-            AND s1.stop_id != s2.stop_id
-          JOIN route_graph rg2 ON rg2.system_id = $1 AND s2.stop_id = rg2.from_stop_id
-          JOIN to_routes tr ON rg2.route_id = tr.route_id
+          JOIN route_station_stops rss1 ON rss1.route_id = fr.route_id
+          JOIN route_station_stops rss2
+            ON rss2.station_id = rss1.station_id AND rss2.route_id != fr.route_id
+          JOIN to_routes tr ON rss2.route_id = tr.route_id
           WHERE fr.route_id != tr.route_id
         )
         SELECT DISTINCT ON (route1, route2)
-          route1, route2, transfer_stop_1 AS transfer_stop
-        FROM transfer_points
+          route1, route2, stops_r1, stops_r2, transfer_rep
+        FROM transfer_candidates
         LIMIT 10
       `, [system, fromStops, toStops]);
 
       for (const row of transferResult.rows) {
         const route1Info = await getRouteInfo(pg, system, row.route1);
         const route2Info = await getRouteInfo(pg, system, row.route2);
-        const transferStopName = await getStopName(pg, system, row.transfer_stop);
+        const transferStopName = await getStopName(pg, system, row.transfer_rep);
         const walkSec = walkTimeSec(walkingPace);
 
-        const ride1Sec = await estimateRideTime(pg, system, row.route1, fromStops, [row.transfer_stop]);
-        const ride2Sec = await estimateRideTime(pg, system, row.route2, [row.transfer_stop], toStops);
+        // Each leg uses the correct stop-ID array for its route at the transfer station:
+        //   Leg 1: origin → route1's stops at the transfer station
+        //   Leg 2: route2's stops at the transfer station → destination
+        const ride1Sec = await estimateRideTime(pg, system, row.route1, fromStops, row.stops_r1);
+        const ride2Sec = await estimateRideTime(pg, system, row.route2, row.stops_r2, toStops);
 
         let transferInfo = { probability: 0.75, transferTime: 120, type: "unknown", notes: null, accessibility: null };
         if (engine) {
           transferInfo = engine.calculateConnectionProbability(
-            row.transfer_stop, row.transfer_stop, 180,
+            row.transfer_rep, row.transfer_rep, 180,
             { fromRouteId: row.route1, toRouteId: row.route2, rushHour, walkingPace }
           );
         }
@@ -173,7 +163,7 @@ export default async function plannerRoutes(fastify, { pg }) {
         const totalSec = walkSec + ride1Sec + transferInfo.transferTime + ride2Sec;
 
         routes.push({
-          id: `transfer-${row.route1}-${row.route2}-${row.transfer_stop}`,
+          id: `transfer-${row.route1}-${row.route2}-${row.transfer_rep}`,
           type: "one_transfer",
           totalTimeSec: totalSec,
           totalTimeMin: Math.round(totalSec / 60),
@@ -185,12 +175,12 @@ export default async function plannerRoutes(fastify, { pg }) {
             {
               type: "ride", routeId: row.route1,
               routeName: route1Info.name, routeColor: route1Info.color,
-              from, to: row.transfer_stop,
+              from, to: row.transfer_rep,
               durationSec: ride1Sec, durationMin: Math.round(ride1Sec / 60),
               direction: "", isRealtime: false,
             },
             {
-              type: "transfer", station: transferStopName, stationId: row.transfer_stop,
+              type: "transfer", station: transferStopName, stationId: row.transfer_rep,
               transferType: transferInfo.type,
               transferTimeSec: transferInfo.transferTime,
               transferTimeMin: Math.round(transferInfo.transferTime / 60 * 10) / 10,
@@ -204,7 +194,7 @@ export default async function plannerRoutes(fastify, { pg }) {
             {
               type: "ride", routeId: row.route2,
               routeName: route2Info.name, routeColor: route2Info.color,
-              from: row.transfer_stop, to,
+              from: row.transfer_rep, to,
               durationSec: ride2Sec, durationMin: Math.round(ride2Sec / 60),
               direction: "", isRealtime: false,
             },
@@ -255,14 +245,16 @@ export default async function plannerRoutes(fastify, { pg }) {
           WHERE rg.system_id = $1
           GROUP BY COALESCE(NULLIF(s.parent_station, ''), s.stop_id), rg.route_id
         ),
-        -- All pairs of routes sharing a physical station, with their respective stop-ID arrays
+        -- All pairs of routes sharing a physical station, with their respective stop-ID arrays.
+        -- station_id is propagated so the two_xfer CTE can enforce truly distinct stations.
         route_xfers AS (
           SELECT DISTINCT
-            rss1.route_id   AS route_a,
-            rss1.stop_ids   AS stops_a,      -- all stop IDs for route_a at this station
+            rss1.station_id  AS station_id,  -- physical station (parent_station or stop_id)
+            rss1.route_id    AS route_a,
+            rss1.stop_ids    AS stops_a,     -- all stop IDs for route_a at this station
             rss1.rep_stop_id AS rep_a,
-            rss2.route_id   AS route_b,
-            rss2.stop_ids   AS stops_b,      -- all stop IDs for route_b at this station
+            rss2.route_id    AS route_b,
+            rss2.stop_ids    AS stops_b,     -- all stop IDs for route_b at this station
             rss2.rep_stop_id AS rep_b
           FROM route_station_stops rss1
           JOIN route_station_stops rss2
@@ -273,22 +265,22 @@ export default async function plannerRoutes(fastify, { pg }) {
         -- time estimation uses the correct stop IDs for each leg.
         two_xfer AS (
           SELECT DISTINCT
-            rx1.route_a  AS route1,
-            rx1.stops_a  AS t1_stops_r1,   -- route1 stops at station1
-            rx1.rep_a    AS t1_rep,         -- representative stop (for display)
-            rx1.route_b  AS route2,
-            rx1.stops_b  AS t1_stops_r2,   -- route2 stops at station1
-            rx2.stops_a  AS t2_stops_r2,   -- route2 stops at station2
-            rx2.rep_a    AS t2_rep,         -- representative stop (for display)
-            rx2.route_b  AS route3,
-            rx2.stops_b  AS t2_stops_r3    -- route3 stops at station2
+            rx1.route_a    AS route1,
+            rx1.stops_a    AS t1_stops_r1,   -- route1 stops at station1
+            rx1.rep_a      AS t1_rep,         -- representative stop (for display)
+            rx1.route_b    AS route2,
+            rx1.stops_b    AS t1_stops_r2,   -- route2 stops at station1
+            rx2.stops_a    AS t2_stops_r2,   -- route2 stops at station2
+            rx2.rep_a      AS t2_rep,         -- representative stop (for display)
+            rx2.route_b    AS route3,
+            rx2.stops_b    AS t2_stops_r3    -- route3 stops at station2
           FROM from_routes fr
           JOIN route_xfers rx1 ON rx1.route_a = fr.route_id
           JOIN route_xfers rx2 ON rx2.route_a = rx1.route_b
           JOIN to_routes tr ON rx2.route_b = tr.route_id
-          WHERE rx1.route_b != rx2.route_b   -- middle route ≠ final route
-            AND rx1.route_a != rx2.route_b   -- no loop back to starting route
-            AND rx1.rep_a   != rx2.rep_a     -- two distinct physical stations
+          WHERE rx1.route_b != rx2.route_b        -- middle route ≠ final route
+            AND rx1.route_a != rx2.route_b        -- no loop back to starting route
+            AND rx1.station_id != rx2.station_id  -- two DISTINCT physical stations
         )
         SELECT DISTINCT ON (route1, route2, route3)
           route1, t1_stops_r1, t1_stops_r2, t1_rep,
@@ -484,13 +476,17 @@ async function resolveStopIds(pg, system, stopId) {
   // Step 3: rapid-transit priority name match — finds rail/subway/tram stops first.
   // Prevents bus stops with the same name (e.g. "Wonderland" bus vs Blue Line)
   // from shadowing the rapid transit stop and consuming the LIMIT.
+  // Checks BOTH from_stop_id AND to_stop_id so terminal stations (e.g. Boston
+  // College, which only appears as to_stop_id in route_graph) are included.
   const railNameMatch = await pg.query(
     `SELECT DISTINCT s.stop_id FROM gtfs_stops s
-     JOIN route_graph rg ON s.system_id = rg.system_id AND s.stop_id = rg.from_stop_id
-     JOIN gtfs_routes gr ON gr.system_id = s.system_id AND gr.route_id = rg.route_id
-     WHERE s.system_id = $1 AND s.stop_name ILIKE $2 AND gr.route_type IN (0, 1, 2)
-     ORDER BY s.stop_id
-     LIMIT 10`,
+     JOIN gtfs_routes gr ON gr.system_id = s.system_id AND gr.route_type IN (0, 1, 2)
+     WHERE s.system_id = $1 AND s.stop_name ILIKE $2
+       AND (
+         EXISTS (SELECT 1 FROM route_graph rg WHERE rg.system_id = $1 AND rg.route_id = gr.route_id AND rg.from_stop_id = s.stop_id)
+         OR EXISTS (SELECT 1 FROM route_graph rg WHERE rg.system_id = $1 AND rg.route_id = gr.route_id AND rg.to_stop_id = s.stop_id)
+       )
+     ORDER BY s.stop_id LIMIT 10`,
     [system, stopId]
   );
   if (railNameMatch.rows.length > 0) {
@@ -499,11 +495,15 @@ async function resolveStopIds(pg, system, stopId) {
 
   // Step 4: exact stop_name match (case-insensitive), any route type
   const exactNameMatch = await pg.query(
-    `SELECT s.stop_id FROM gtfs_stops s
-     JOIN route_graph rg ON s.system_id = rg.system_id AND s.stop_id = rg.from_stop_id
-     WHERE s.system_id = $1 AND s.stop_name ILIKE $2
-     ORDER BY length(s.stop_name)
-     LIMIT 10`,
+    `SELECT stop_id FROM (
+       SELECT DISTINCT s.stop_id, length(s.stop_name) AS name_len
+       FROM gtfs_stops s
+       WHERE s.system_id = $1 AND s.stop_name ILIKE $2
+         AND (
+           EXISTS (SELECT 1 FROM route_graph rg WHERE rg.system_id = $1 AND rg.from_stop_id = s.stop_id)
+           OR EXISTS (SELECT 1 FROM route_graph rg WHERE rg.system_id = $1 AND rg.to_stop_id = s.stop_id)
+         )
+     ) sub ORDER BY name_len LIMIT 10`,
     [system, stopId]
   );
   if (exactNameMatch.rows.length > 0) {
@@ -512,11 +512,15 @@ async function resolveStopIds(pg, system, stopId) {
 
   // Step 5: prefix match — user typed a partial name (e.g. "Norristown" matches "Norristown Transit Center")
   const prefixMatch = await pg.query(
-    `SELECT s.stop_id FROM gtfs_stops s
-     JOIN route_graph rg ON s.system_id = rg.system_id AND s.stop_id = rg.from_stop_id
-     WHERE s.system_id = $1 AND s.stop_name ILIKE $2
-     ORDER BY length(s.stop_name)
-     LIMIT 10`,
+    `SELECT stop_id FROM (
+       SELECT DISTINCT s.stop_id, length(s.stop_name) AS name_len
+       FROM gtfs_stops s
+       WHERE s.system_id = $1 AND s.stop_name ILIKE $2
+         AND (
+           EXISTS (SELECT 1 FROM route_graph rg WHERE rg.system_id = $1 AND rg.from_stop_id = s.stop_id)
+           OR EXISTS (SELECT 1 FROM route_graph rg WHERE rg.system_id = $1 AND rg.to_stop_id = s.stop_id)
+         )
+     ) sub ORDER BY name_len LIMIT 10`,
     [system, stopId + '%']
   );
   if (prefixMatch.rows.length > 0) {
