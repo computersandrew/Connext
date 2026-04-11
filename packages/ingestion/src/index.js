@@ -44,7 +44,14 @@ async function connectRedis() {
     maxRetriesPerRequest: 3,
   });
 
-  redis.on("error", (err) => logger.error({ err }, "Redis error"));
+  let lastRedisErrLog = 0;
+  redis.on("error", (err) => {
+    const now = Date.now();
+    if (now - lastRedisErrLog > 60_000) {
+      logger.error({ err }, "Redis error (will suppress duplicates for 60s)");
+      lastRedisErrLog = now;
+    }
+  });
   redis.on("connect", () => logger.info(`Redis connected: ${REDIS_CONFIG.host}:${REDIS_CONFIG.port}`));
   return redis;
 }
