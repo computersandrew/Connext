@@ -308,6 +308,51 @@ async function resolveStopIds(pg, system, stopId) {
     }
   }
 
+  // Step 3: search by stop_name directly (handles user-typed station names)
+  const exactNameMatch = await pg.query(
+    `SELECT s.stop_id FROM gtfs_stops s
+     JOIN route_graph rg ON s.system_id = rg.system_id AND s.stop_id = rg.from_stop_id
+     WHERE s.system_id = $1 AND s.stop_name ILIKE $2
+     ORDER BY length(s.stop_name)
+     LIMIT 5`,
+    [system, stopId]
+  );
+  if (exactNameMatch.rows.length > 0) {
+    return exactNameMatch.rows.map((r) => r.stop_id);
+  }
+
+  // Step 4: prefix match — user typed a partial name (e.g. "Norristown" matches "Norristown Transit Center")
+  const prefixMatch = await pg.query(
+    `SELECT s.stop_id FROM gtfs_stops s
+     JOIN route_graph rg ON s.system_id = rg.system_id AND s.stop_id = rg.from_stop_id
+     WHERE s.system_id = $1 AND s.stop_name ILIKE $2
+     ORDER BY length(s.stop_name)
+     LIMIT 5`,
+    [system, stopId + '%']
+  );
+  if (prefixMatch.rows.length > 0) {
+    return prefixMatch.rows.map((r) => r.stop_id);
+  }
+
+  // Step 5: contains match — handles abbreviations like "Norristown TC" → "Norristown Transit Center"
+  //         Split on whitespace and match stops containing all significant words
+  const words = stopId.split(/\s+/).filter((w) => w.length > 2);
+  if (words.length > 0) {
+    // $1 = system, $2...$N = word patterns
+    const conditions = words.map((_, i) => `s.stop_name ILIKE $${i + 2}`).join(' AND ');
+    const fuzzyMatch = await pg.query(
+      `SELECT s.stop_id FROM gtfs_stops s
+       JOIN route_graph rg ON s.system_id = rg.system_id AND s.stop_id = rg.from_stop_id
+       WHERE s.system_id = $1 AND ${conditions}
+       ORDER BY length(s.stop_name)
+       LIMIT 5`,
+      [system, ...words.map((w) => `%${w}%`)]
+    );
+    if (fuzzyMatch.rows.length > 0) {
+      return fuzzyMatch.rows.map((r) => r.stop_id);
+    }
+  }
+
   return ids.length > 0 ? ids : [stopId];
 }
 
@@ -344,19 +389,29 @@ async function estimateRideTime(pg, system, routeId, fromStops, toStops) {
 
     if (result.rows[0]?.travel_sec) return result.rows[0].travel_sec;
 
-    // Method 2: recursive graph traversal — sum edge weights along the route
+    // Method 2: recursive graph traversal with cycle detection
+    // Route graphs have bidirectional edges (trains run both ways), so we must
+    // track visited stops to prevent exponential blow-up.
     const graphResult = await pg.query(`
       WITH RECURSIVE path AS (
-        SELECT from_stop_id, to_stop_id, avg_travel_seconds, 1 as hops
+        SELECT from_stop_id, to_stop_id,
+               avg_travel_seconds AS total_sec,
+               1 AS hops,
+               ARRAY[from_stop_id] AS visited
         FROM route_graph
         WHERE system_id = $1 AND route_id = $2 AND from_stop_id = ANY($3)
         UNION ALL
-        SELECT rg.from_stop_id, rg.to_stop_id, p.avg_travel_seconds + rg.avg_travel_seconds, p.hops + 1
+        SELECT rg.from_stop_id, rg.to_stop_id,
+               p.total_sec + rg.avg_travel_seconds,
+               p.hops + 1,
+               p.visited || rg.from_stop_id
         FROM route_graph rg
         JOIN path p ON rg.from_stop_id = p.to_stop_id
-        WHERE rg.system_id = $1 AND rg.route_id = $2 AND p.hops < 50
+        WHERE rg.system_id = $1 AND rg.route_id = $2
+          AND p.hops < 30
+          AND NOT (rg.from_stop_id = ANY(p.visited))
       )
-      SELECT MIN(avg_travel_seconds) as travel_sec
+      SELECT MIN(total_sec) AS travel_sec
       FROM path WHERE to_stop_id = ANY($4)
     `, [system, routeId, fromStops, toStops]);
 
