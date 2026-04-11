@@ -14,12 +14,13 @@
     "import-stop-times": "node scripts/import-stop-times.js"
   },
   "dependencies": {
+    "dotenv": "^17.4.1",
     "gtfs-realtime-bindings": "^1.1.1",
-    "protobufjs": "^7.2.6",
     "ioredis": "^5.3.2",
+    "node-cron": "^3.0.3",
     "pg": "^8.12.0",
     "pino": "^8.19.0",
-    "node-cron": "^3.0.3",
+    "protobufjs": "^7.2.6",
     "undici": "^6.6.2"
   },
   "devDependencies": {
