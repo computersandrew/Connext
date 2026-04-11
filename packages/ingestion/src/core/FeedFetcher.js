@@ -40,6 +40,7 @@ export class FeedFetcher {
           // Rate limited — back off and retry
           const retryAfter = parseInt(respHeaders["retry-after"] || "5") * 1000;
           this.logger.warn({ url, attempt, retryAfter }, "Rate limited, backing off");
+          lastError = new Error(`HTTP 429 (rate limited) from ${url}`);
           await this._sleep(retryAfter);
           continue;
         }
@@ -47,6 +48,7 @@ export class FeedFetcher {
         if (statusCode === 404) {
           // Some agencies occasionally 404 during feed regeneration
           this.logger.warn({ url, attempt }, "Feed returned 404, retrying");
+          lastError = new Error(`HTTP 404 from ${url}`);
           await this._sleep(this.config.retryDelayMs);
           continue;
         }

@@ -19,6 +19,7 @@ export function getRedis() {
       retryStrategy: (times) => Math.min(times * 200, 5000),
       maxRetriesPerRequest: 3,
     });
+    redis.on("error", () => {}); // suppress unhandled error events; connection errors are logged at startup
   }
   return redis;
 }
