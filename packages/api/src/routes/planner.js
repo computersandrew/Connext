@@ -207,17 +207,26 @@ export default async function plannerRoutes(fastify, { pg }) {
 
     // ─── 3. Two-transfer routes ───────────────────────────────────────────
     // Finds route1 → transfer_station_1 → route2 → transfer_station_2 → route3
-    // Only considers rail/rapid-transit routes to avoid bus combinatorial explosion.
-    // Uses parent_station grouping to handle agencies with split stop IDs per line
-    // (e.g. MBTA uses separate inbound/outbound stop IDs at each station).
-    // The SQL returns stop-ID arrays for EACH route at EACH transfer station so
-    // estimateRideTime always uses the correct stop IDs for the route being timed.
+    // For rail systems (MBTA, SEPTA): only considers rail routes to prevent explosion.
+    // For pure-bus systems (CDTA): uses middle_routes pre-filter to avoid scanning
+    // all 69 routes × all stops. Only routes that serve stops of BOTH from_routes
+    // AND to_routes are considered as middle routes — drastically cuts route_xfers size.
+    // Uses parent_station grouping for agencies with split inbound/outbound stop IDs.
     try {
       const twoXferResult = await pg.query(`
         WITH
+        -- For systems with rapid-transit (MBTA, SEPTA), restrict two-transfer planning
+        -- to rail routes to avoid a combinatorial explosion of bus-bus combinations.
+        -- For pure-bus systems (CDTA), fall back to all routes so transfers work at all.
         rail_routes AS (
           SELECT route_id FROM gtfs_routes
           WHERE system_id = $1 AND route_type IN (0, 1, 2)
+          UNION ALL
+          SELECT route_id FROM gtfs_routes
+          WHERE system_id = $1 AND route_type = 3
+            AND NOT EXISTS (
+              SELECT 1 FROM gtfs_routes WHERE system_id = $1 AND route_type IN (0, 1, 2)
+            )
         ),
         from_routes AS (
           SELECT DISTINCT rg.route_id
@@ -229,10 +238,41 @@ export default async function plannerRoutes(fastify, { pg }) {
           FROM route_graph rg JOIN rail_routes rr ON rg.route_id = rr.route_id
           WHERE rg.system_id = $1 AND (rg.from_stop_id = ANY($3) OR rg.to_stop_id = ANY($3))
         ),
-        -- All rail stops in the route_graph, grouped by (physical_station, route)
-        -- so we get an array of ALL stop IDs for a given route at a given station.
-        -- This correctly handles agencies (MBTA) that have separate inbound/outbound
-        -- stop IDs at the same physical station.
+        -- All stops visited by from_routes (used to find middle-leg candidates).
+        from_route_stops AS (
+          SELECT DISTINCT rg.from_stop_id AS stop_id
+          FROM route_graph rg
+          JOIN from_routes fr ON rg.route_id = fr.route_id
+          WHERE rg.system_id = $1
+        ),
+        -- All stops visited by to_routes (used to find middle-leg candidates).
+        to_route_stops AS (
+          SELECT DISTINCT rg.from_stop_id AS stop_id
+          FROM route_graph rg
+          JOIN to_routes tr ON rg.route_id = tr.route_id
+          WHERE rg.system_id = $1
+        ),
+        -- Routes that serve at least one stop in common with from_routes AND at least
+        -- one stop in common with to_routes.  These are the only viable middle routes.
+        -- For large pure-bus systems this shrinks the search space by 10–50×.
+        middle_routes AS (
+          SELECT DISTINCT rg1.route_id
+          FROM route_graph rg1
+          JOIN from_route_stops fs ON rg1.from_stop_id = fs.stop_id
+          JOIN route_graph rg2 ON rg2.system_id = $1 AND rg2.route_id = rg1.route_id
+          JOIN to_route_stops ts ON rg2.from_stop_id = ts.stop_id
+          WHERE rg1.system_id = $1
+        ),
+        -- Only build route_station_stops for the small set of relevant routes:
+        -- from_routes + to_routes + middle_routes.  Excludes the vast majority of
+        -- routes that can never appear in a valid two-transfer path.
+        relevant_routes AS (
+          SELECT route_id FROM from_routes
+          UNION SELECT route_id FROM to_routes
+          UNION SELECT route_id FROM middle_routes
+        ),
+        -- Stops grouped by (physical_station, route) — only for relevant routes.
+        -- COALESCE uses parent_station when set (MBTA) or falls back to stop_id.
         route_station_stops AS (
           SELECT
             COALESCE(NULLIF(s.parent_station, ''), s.stop_id) AS station_id,
@@ -240,40 +280,38 @@ export default async function plannerRoutes(fastify, { pg }) {
             ARRAY_AGG(DISTINCT rg.from_stop_id) AS stop_ids,
             MIN(rg.from_stop_id) AS rep_stop_id   -- representative ID for display
           FROM route_graph rg
-          JOIN rail_routes rr ON rg.route_id = rr.route_id
+          JOIN relevant_routes rr ON rg.route_id = rr.route_id
           JOIN gtfs_stops s ON s.system_id = $1 AND s.stop_id = rg.from_stop_id
           WHERE rg.system_id = $1
           GROUP BY COALESCE(NULLIF(s.parent_station, ''), s.stop_id), rg.route_id
         ),
-        -- All pairs of routes sharing a physical station, with their respective stop-ID arrays.
-        -- station_id is propagated so the two_xfer CTE can enforce truly distinct stations.
+        -- Transfer pairs among relevant routes sharing a physical station.
+        -- station_id is propagated so two_xfer can enforce distinct transfer stations.
         route_xfers AS (
           SELECT DISTINCT
-            rss1.station_id  AS station_id,  -- physical station (parent_station or stop_id)
+            rss1.station_id  AS station_id,
             rss1.route_id    AS route_a,
-            rss1.stop_ids    AS stops_a,     -- all stop IDs for route_a at this station
+            rss1.stop_ids    AS stops_a,
             rss1.rep_stop_id AS rep_a,
             rss2.route_id    AS route_b,
-            rss2.stop_ids    AS stops_b,     -- all stop IDs for route_b at this station
+            rss2.stop_ids    AS stops_b,
             rss2.rep_stop_id AS rep_b
           FROM route_station_stops rss1
           JOIN route_station_stops rss2
             ON rss1.station_id = rss2.station_id AND rss1.route_id != rss2.route_id
         ),
         -- Two-transfer paths: route1 → station1 → route2 → station2 → route3
-        -- Returns stop arrays for BOTH routes at EACH transfer station so ride-
-        -- time estimation uses the correct stop IDs for each leg.
         two_xfer AS (
           SELECT DISTINCT
             rx1.route_a    AS route1,
-            rx1.stops_a    AS t1_stops_r1,   -- route1 stops at station1
-            rx1.rep_a      AS t1_rep,         -- representative stop (for display)
+            rx1.stops_a    AS t1_stops_r1,
+            rx1.rep_a      AS t1_rep,
             rx1.route_b    AS route2,
-            rx1.stops_b    AS t1_stops_r2,   -- route2 stops at station1
-            rx2.stops_a    AS t2_stops_r2,   -- route2 stops at station2
-            rx2.rep_a      AS t2_rep,         -- representative stop (for display)
+            rx1.stops_b    AS t1_stops_r2,
+            rx2.stops_a    AS t2_stops_r2,
+            rx2.rep_a      AS t2_rep,
             rx2.route_b    AS route3,
-            rx2.stops_b    AS t2_stops_r3    -- route3 stops at station2
+            rx2.stops_b    AS t2_stops_r3
           FROM from_routes fr
           JOIN route_xfers rx1 ON rx1.route_a = fr.route_id
           JOIN route_xfers rx2 ON rx2.route_a = rx1.route_b
@@ -287,94 +325,128 @@ export default async function plannerRoutes(fastify, { pg }) {
           route2, t2_stops_r2, t2_stops_r3, t2_rep,
           route3
         FROM two_xfer
-        LIMIT 5
+        ORDER BY route1, route2, route3
+        LIMIT 60
       `, [system, fromStops, toStops]);
 
-      for (const row of twoXferResult.rows) {
-        const [r1Info, r2Info, r3Info, t1Name, t2Name] = await Promise.all([
-          getRouteInfo(pg, system, row.route1),
-          getRouteInfo(pg, system, row.route2),
-          getRouteInfo(pg, system, row.route3),
-          getStopName(pg, system, row.t1_rep),
-          getStopName(pg, system, row.t2_rep),
+      if (twoXferResult.rows.length > 0) {
+        // Batch-fetch all route infos and stop names in two queries up front.
+        // This avoids N×getRouteInfo + N×getStopName round-trips inside the loop.
+        const routeIds = [...new Set(twoXferResult.rows.flatMap(r => [r.route1, r.route2, r.route3]))];
+        const stopIds  = [...new Set(twoXferResult.rows.flatMap(r => [r.t1_rep, r.t2_rep]))];
+
+        const [routeInfosRes, stopNamesRes] = await Promise.all([
+          pg.query(
+            `SELECT route_id, route_short_name, route_long_name, route_color
+             FROM gtfs_routes WHERE system_id=$1 AND route_id=ANY($2)`,
+            [system, routeIds]
+          ),
+          pg.query(
+            `SELECT stop_id, stop_name FROM gtfs_stops WHERE system_id=$1 AND stop_id=ANY($2)`,
+            [system, stopIds]
+          ),
         ]);
+
+        const routeInfoCache = new Map(
+          routeInfosRes.rows.map(r => [r.route_id, {
+            name: r.route_short_name || r.route_long_name || r.route_id,
+            color: r.route_color ? `#${r.route_color}` : "#888888",
+          }])
+        );
+        const stopNameCache = new Map(stopNamesRes.rows.map(r => [r.stop_id, r.stop_name]));
+
+        // Process all combos in parallel — estimateRideTime calls are concurrent
+        // across combos, limited naturally by the database connection pool.
         const walkSec = walkTimeSec(walkingPace);
 
-        // Each leg uses the stop-ID array for the CORRECT route at each station:
-        //   Leg 1: from origin → route1's stops at station1
-        //   Leg 2: from route2's stops at station1 → route2's stops at station2
-        //   Leg 3: from route3's stops at station2 → destination
-        const [ride1Sec, ride2Sec, ride3Sec] = await Promise.all([
-          estimateRideTime(pg, system, row.route1, fromStops, row.t1_stops_r1),
-          estimateRideTime(pg, system, row.route2, row.t1_stops_r2, row.t2_stops_r2),
-          estimateRideTime(pg, system, row.route3, row.t2_stops_r3, toStops),
-        ]);
+        const comboResults = await Promise.all(twoXferResult.rows.map(async (row) => {
+          const [ride1Sec, ride2Sec, ride3Sec] = await Promise.all([
+            estimateRideTime(pg, system, row.route1, fromStops, row.t1_stops_r1),
+            estimateRideTime(pg, system, row.route2, row.t1_stops_r2, row.t2_stops_r2),
+            estimateRideTime(pg, system, row.route3, row.t2_stops_r3, toStops),
+          ]);
 
-        let xfer1Info = { probability: 0.75, transferTime: 120, type: "unknown", notes: null, accessibility: null };
-        let xfer2Info = { probability: 0.75, transferTime: 120, type: "unknown", notes: null, accessibility: null };
-        if (engine) {
-          xfer1Info = engine.calculateConnectionProbability(row.t1_rep, row.t1_rep, 180, { fromRouteId: row.route1, toRouteId: row.route2, rushHour, walkingPace });
-          xfer2Info = engine.calculateConnectionProbability(row.t2_rep, row.t2_rep, 180, { fromRouteId: row.route2, toRouteId: row.route3, rushHour, walkingPace });
+          // Skip combos where any leg has only a fallback time — those stop
+          // combinations are directionally invalid (wrong-side-of-street stop).
+          if (ride1Sec === 300 || ride2Sec === 300 || ride3Sec === 300) return null;
+
+          const r1Info = routeInfoCache.get(row.route1) || { name: row.route1, color: "#888888" };
+          const r2Info = routeInfoCache.get(row.route2) || { name: row.route2, color: "#888888" };
+          const r3Info = routeInfoCache.get(row.route3) || { name: row.route3, color: "#888888" };
+          const t1Name = stopNameCache.get(row.t1_rep) || row.t1_rep;
+          const t2Name = stopNameCache.get(row.t2_rep) || row.t2_rep;
+
+          let xfer1Info = { probability: 0.75, transferTime: 120, type: "unknown", notes: null, accessibility: null };
+          let xfer2Info = { probability: 0.75, transferTime: 120, type: "unknown", notes: null, accessibility: null };
+          if (engine) {
+            xfer1Info = engine.calculateConnectionProbability(row.t1_rep, row.t1_rep, 180, { fromRouteId: row.route1, toRouteId: row.route2, rushHour, walkingPace });
+            xfer2Info = engine.calculateConnectionProbability(row.t2_rep, row.t2_rep, 180, { fromRouteId: row.route2, toRouteId: row.route3, rushHour, walkingPace });
+          }
+
+          const totalSec = walkSec + ride1Sec + xfer1Info.transferTime + ride2Sec + xfer2Info.transferTime + ride3Sec;
+          const overallProb = xfer1Info.probability * xfer2Info.probability;
+
+          return {
+            id: `transfer2-${row.route1}-${row.route2}-${row.route3}-${row.t1_rep}-${row.t2_rep}`,
+            type: "two_transfers",
+            totalTimeSec: totalSec,
+            totalTimeMin: Math.round(totalSec / 60),
+            transfers: 2,
+            overallProbability: overallProb,
+            leaveBy: new Date((now - walkSec) * 1000).toISOString(),
+            legs: [
+              { type: "walk", durationSec: walkSec, durationMin: Math.round(walkSec / 60), description: "Walk to stop" },
+              {
+                type: "ride", routeId: row.route1,
+                routeName: r1Info.name, routeColor: r1Info.color,
+                from, to: row.t1_rep,
+                durationSec: ride1Sec, durationMin: Math.round(ride1Sec / 60),
+                direction: "", isRealtime: false,
+              },
+              {
+                type: "transfer", station: t1Name, stationId: row.t1_rep,
+                transferType: xfer1Info.type, transferTimeSec: xfer1Info.transferTime,
+                transferTimeMin: Math.round(xfer1Info.transferTime / 60 * 10) / 10,
+                bufferSec: 180, bufferMin: 3,
+                probability: xfer1Info.probability,
+                probabilityPct: Math.round(xfer1Info.probability * 100),
+                accessibility: xfer1Info.accessibility || null,
+                notes: xfer1Info.notes || null,
+                platformChange: xfer1Info.type !== "same_platform",
+              },
+              {
+                type: "ride", routeId: row.route2,
+                routeName: r2Info.name, routeColor: r2Info.color,
+                from: row.t1_rep, to: row.t2_rep,
+                durationSec: ride2Sec, durationMin: Math.round(ride2Sec / 60),
+                direction: "", isRealtime: false,
+              },
+              {
+                type: "transfer", station: t2Name, stationId: row.t2_rep,
+                transferType: xfer2Info.type, transferTimeSec: xfer2Info.transferTime,
+                transferTimeMin: Math.round(xfer2Info.transferTime / 60 * 10) / 10,
+                bufferSec: 180, bufferMin: 3,
+                probability: xfer2Info.probability,
+                probabilityPct: Math.round(xfer2Info.probability * 100),
+                accessibility: xfer2Info.accessibility || null,
+                notes: xfer2Info.notes || null,
+                platformChange: xfer2Info.type !== "same_platform",
+              },
+              {
+                type: "ride", routeId: row.route3,
+                routeName: r3Info.name, routeColor: r3Info.color,
+                from: row.t2_rep, to,
+                durationSec: ride3Sec, durationMin: Math.round(ride3Sec / 60),
+                direction: "", isRealtime: false,
+              },
+            ],
+          };
+        }));
+
+        // Filter nulls (invalid combos) and add to routes
+        for (const r of comboResults) {
+          if (r !== null) routes.push(r);
         }
-
-        const totalSec = walkSec + ride1Sec + xfer1Info.transferTime + ride2Sec + xfer2Info.transferTime + ride3Sec;
-        const overallProb = xfer1Info.probability * xfer2Info.probability;
-
-        routes.push({
-          id: `transfer2-${row.route1}-${row.route2}-${row.route3}-${row.t1_rep}-${row.t2_rep}`,
-          type: "two_transfers",
-          totalTimeSec: totalSec,
-          totalTimeMin: Math.round(totalSec / 60),
-          transfers: 2,
-          overallProbability: overallProb,
-          leaveBy: new Date((now - walkSec) * 1000).toISOString(),
-          legs: [
-            { type: "walk", durationSec: walkSec, durationMin: Math.round(walkSec / 60), description: "Walk to stop" },
-            {
-              type: "ride", routeId: row.route1,
-              routeName: r1Info.name, routeColor: r1Info.color,
-              from, to: row.t1_rep,
-              durationSec: ride1Sec, durationMin: Math.round(ride1Sec / 60),
-              direction: "", isRealtime: false,
-            },
-            {
-              type: "transfer", station: t1Name, stationId: row.t1_rep,
-              transferType: xfer1Info.type, transferTimeSec: xfer1Info.transferTime,
-              transferTimeMin: Math.round(xfer1Info.transferTime / 60 * 10) / 10,
-              bufferSec: 180, bufferMin: 3,
-              probability: xfer1Info.probability,
-              probabilityPct: Math.round(xfer1Info.probability * 100),
-              accessibility: xfer1Info.accessibility || null,
-              notes: xfer1Info.notes || null,
-              platformChange: xfer1Info.type !== "same_platform",
-            },
-            {
-              type: "ride", routeId: row.route2,
-              routeName: r2Info.name, routeColor: r2Info.color,
-              from: row.t1_rep, to: row.t2_rep,
-              durationSec: ride2Sec, durationMin: Math.round(ride2Sec / 60),
-              direction: "", isRealtime: false,
-            },
-            {
-              type: "transfer", station: t2Name, stationId: row.t2_rep,
-              transferType: xfer2Info.type, transferTimeSec: xfer2Info.transferTime,
-              transferTimeMin: Math.round(xfer2Info.transferTime / 60 * 10) / 10,
-              bufferSec: 180, bufferMin: 3,
-              probability: xfer2Info.probability,
-              probabilityPct: Math.round(xfer2Info.probability * 100),
-              accessibility: xfer2Info.accessibility || null,
-              notes: xfer2Info.notes || null,
-              platformChange: xfer2Info.type !== "same_platform",
-            },
-            {
-              type: "ride", routeId: row.route3,
-              routeName: r3Info.name, routeColor: r3Info.color,
-              from: row.t2_rep, to,
-              durationSec: ride3Sec, durationMin: Math.round(ride3Sec / 60),
-              direction: "", isRealtime: false,
-            },
-          ],
-        });
       }
     } catch (err) {
       fastify.log.debug({ err: err.message }, "Two-transfer route query failed");
@@ -550,65 +622,53 @@ async function resolveStopIds(pg, system, stopId) {
 }
 
 async function estimateRideTime(pg, system, routeId, fromStops, toStops) {
+  // Fast JS approach: 3 parallel queries + in-memory join.
+  // Avoids the bad nested-loop query plans that PostgreSQL generates when
+  // joining gtfs_stop_times to gtfs_trips via a CTE subquery.  Each query
+  // uses the (system_id, stop_id) prefix of idx_stop_times_stop_trip and
+  // the in-memory join handles directionality via arr_sec > dep_sec.
   try {
-    // Method 1: direct stop_times lookup (fastest, most accurate)
-    const result = await pg.query(`
-      SELECT MIN(arrive_sec - depart_sec) AS travel_sec
-      FROM (
-        SELECT
-          (SPLIT_PART(st1.departure_time,':',1)::int*3600 +
-           SPLIT_PART(st1.departure_time,':',2)::int*60 +
-           SPLIT_PART(st1.departure_time,':',3)::int) AS depart_sec,
-          (SPLIT_PART(st2.arrival_time,':',1)::int*3600 +
-           SPLIT_PART(st2.arrival_time,':',2)::int*60 +
-           SPLIT_PART(st2.arrival_time,':',3)::int) AS arrive_sec
-        FROM gtfs_stop_times st1
-        JOIN gtfs_stop_times st2
-          ON st1.system_id = st2.system_id
-          AND st1.trip_id = st2.trip_id
-          AND st2.stop_sequence > st1.stop_sequence
-        JOIN gtfs_trips t
-          ON st1.system_id = t.system_id AND st1.trip_id = t.trip_id
-        WHERE st1.system_id = $1
-          AND t.route_id = $2
-          AND st1.stop_id = ANY($3)
-          AND st2.stop_id = ANY($4)
-          AND st1.departure_time ~ '^\d+:\d+:\d+$'
-          AND st2.arrival_time ~ '^\d+:\d+:\d+$'
-        LIMIT 20
-      ) sub
-      WHERE arrive_sec > depart_sec
-    `, [system, routeId, fromStops, toStops]);
+    const [tripRes, depRes, arrRes] = await Promise.all([
+      pg.query(
+        'SELECT trip_id FROM gtfs_trips WHERE system_id=$1 AND route_id=$2',
+        [system, routeId]
+      ),
+      pg.query(
+        'SELECT trip_id, departure_time FROM gtfs_stop_times WHERE system_id=$1 AND stop_id=ANY($2) LIMIT 5000',
+        [system, fromStops]
+      ),
+      pg.query(
+        'SELECT trip_id, arrival_time FROM gtfs_stop_times WHERE system_id=$1 AND stop_id=ANY($2) LIMIT 5000',
+        [system, toStops]
+      ),
+    ]);
 
-    if (result.rows[0]?.travel_sec) return result.rows[0].travel_sec;
+    const tripSet = new Set(tripRes.rows.map(r => r.trip_id));
+    const toSec = t => {
+      const [h, m, s] = t.split(':').map(Number);
+      return h * 3600 + m * 60 + s;
+    };
 
-    // Method 2: recursive graph traversal with cycle detection
-    // Route graphs have bidirectional edges (trains run both ways), so we must
-    // track visited stops to prevent exponential blow-up.
-    const graphResult = await pg.query(`
-      WITH RECURSIVE path AS (
-        SELECT from_stop_id, to_stop_id,
-               avg_travel_seconds AS total_sec,
-               1 AS hops,
-               ARRAY[from_stop_id] AS visited
-        FROM route_graph
-        WHERE system_id = $1 AND route_id = $2 AND from_stop_id = ANY($3)
-        UNION ALL
-        SELECT rg.from_stop_id, rg.to_stop_id,
-               p.total_sec + rg.avg_travel_seconds,
-               p.hops + 1,
-               p.visited || rg.from_stop_id
-        FROM route_graph rg
-        JOIN path p ON rg.from_stop_id = p.to_stop_id
-        WHERE rg.system_id = $1 AND rg.route_id = $2
-          AND p.hops < 30
-          AND NOT (rg.from_stop_id = ANY(p.visited))
-      )
-      SELECT MIN(total_sec) AS travel_sec
-      FROM path WHERE to_stop_id = ANY($4)
-    `, [system, routeId, fromStops, toStops]);
+    // Build a map of trip_id → earliest departure time at fromStops
+    const depMap = new Map();
+    for (const r of depRes.rows) {
+      if (!tripSet.has(r.trip_id) || !r.departure_time) continue;
+      const sec = toSec(r.departure_time);
+      const cur = depMap.get(r.trip_id);
+      if (cur === undefined || sec < cur) depMap.set(r.trip_id, sec);
+    }
 
-    return graphResult.rows[0]?.travel_sec || 300;
+    // Find minimum travel time (arr_sec > dep_sec ensures correct direction)
+    let minTime = Infinity;
+    for (const r of arrRes.rows) {
+      if (!tripSet.has(r.trip_id) || !r.arrival_time) continue;
+      const depSec = depMap.get(r.trip_id);
+      if (depSec === undefined) continue;
+      const arrSec = toSec(r.arrival_time);
+      if (arrSec > depSec) minTime = Math.min(minTime, arrSec - depSec);
+    }
+
+    return minTime === Infinity ? 300 : minTime;
   } catch {
     return 300;
   }
