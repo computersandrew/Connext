@@ -184,37 +184,44 @@ async function buildRouteGraph(pool) {
   await pool.query("DROP MATERIALIZED VIEW IF EXISTS stop_connections CASCADE");
   await pool.query("DROP MATERIALIZED VIEW IF EXISTS route_graph CASCADE");
 
-  // Build route_graph: consecutive stop pairs with average travel times
+  // Build route_graph: consecutive stop pairs with average travel times.
+  // Uses LEAD() instead of stop_sequence+1 to correctly handle agencies that
+  // increment stop_sequence by values other than 1 (e.g. MBTA uses +10).
   await pool.query(`
     CREATE MATERIALIZED VIEW route_graph AS
+    WITH consecutive AS (
+      SELECT
+        st.system_id,
+        st.trip_id,
+        st.stop_id AS from_stop_id,
+        st.departure_time AS dep_time,
+        LEAD(st.stop_id)       OVER (PARTITION BY st.system_id, st.trip_id ORDER BY st.stop_sequence) AS to_stop_id,
+        LEAD(st.arrival_time)  OVER (PARTITION BY st.system_id, st.trip_id ORDER BY st.stop_sequence) AS arr_time
+      FROM gtfs_stop_times st
+      WHERE st.departure_time IS NOT NULL
+        AND st.departure_time ~ '^\\d+:\\d+:\\d+$'
+    )
     SELECT
-        st1.system_id,
-        st1.stop_id AS from_stop_id,
-        st2.stop_id AS to_stop_id,
+        c.system_id,
+        c.from_stop_id,
+        c.to_stop_id,
         t.route_id,
         COUNT(*) AS trip_count,
         AVG(
-            (SPLIT_PART(st2.arrival_time, ':', 1)::int * 3600 +
-             SPLIT_PART(st2.arrival_time, ':', 2)::int * 60 +
-             SPLIT_PART(st2.arrival_time, ':', 3)::int)
+            (SPLIT_PART(c.arr_time, ':', 1)::int * 3600 +
+             SPLIT_PART(c.arr_time, ':', 2)::int * 60 +
+             SPLIT_PART(c.arr_time, ':', 3)::int)
             -
-            (SPLIT_PART(st1.departure_time, ':', 1)::int * 3600 +
-             SPLIT_PART(st1.departure_time, ':', 2)::int * 60 +
-             SPLIT_PART(st1.departure_time, ':', 3)::int)
+            (SPLIT_PART(c.dep_time, ':', 1)::int * 3600 +
+             SPLIT_PART(c.dep_time, ':', 2)::int * 60 +
+             SPLIT_PART(c.dep_time, ':', 3)::int)
         )::integer AS avg_travel_seconds
-    FROM gtfs_stop_times st1
-    JOIN gtfs_stop_times st2
-        ON st1.system_id = st2.system_id
-        AND st1.trip_id = st2.trip_id
-        AND st2.stop_sequence = st1.stop_sequence + 1
-    JOIN gtfs_trips t
-        ON st1.system_id = t.system_id
-        AND st1.trip_id = t.trip_id
-    WHERE st1.departure_time IS NOT NULL
-        AND st2.arrival_time IS NOT NULL
-        AND st1.departure_time ~ '^\\d+:\\d+:\\d+$'
-        AND st2.arrival_time ~ '^\\d+:\\d+:\\d+$'
-    GROUP BY st1.system_id, st1.stop_id, st2.stop_id, t.route_id
+    FROM consecutive c
+    JOIN gtfs_trips t ON c.system_id = t.system_id AND c.trip_id = t.trip_id
+    WHERE c.to_stop_id IS NOT NULL
+      AND c.arr_time IS NOT NULL
+      AND c.arr_time ~ '^\\d+:\\d+:\\d+$'
+    GROUP BY c.system_id, c.from_stop_id, c.to_stop_id, t.route_id
     HAVING COUNT(*) >= 2
   `);
 

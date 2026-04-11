@@ -215,6 +215,152 @@ export default async function plannerRoutes(fastify, { pg }) {
       fastify.log.debug({ err: err.message }, "Transfer route query failed");
     }
 
+    // ─── 3. Two-transfer routes ───────────────────────────────────────────
+    // Finds route1 → transfer_station_1 → route2 → transfer_station_2 → route3
+    // Only considers rail/rapid-transit routes to avoid bus combinatorial explosion.
+    // Uses parent_station grouping to handle agencies with split stop IDs per line.
+    try {
+      const twoXferResult = await pg.query(`
+        WITH
+        rail_routes AS (
+          SELECT route_id FROM gtfs_routes
+          WHERE system_id = $1 AND route_type IN (0, 1, 2)
+        ),
+        from_routes AS (
+          SELECT DISTINCT rg.route_id
+          FROM route_graph rg JOIN rail_routes rr ON rg.route_id = rr.route_id
+          WHERE rg.system_id = $1 AND (rg.from_stop_id = ANY($2) OR rg.to_stop_id = ANY($2))
+        ),
+        to_routes AS (
+          SELECT DISTINCT rg.route_id
+          FROM route_graph rg JOIN rail_routes rr ON rg.route_id = rr.route_id
+          WHERE rg.system_id = $1 AND (rg.from_stop_id = ANY($3) OR rg.to_stop_id = ANY($3))
+        ),
+        -- Map each rail stop to its physical station (using parent_station when available)
+        station_stops AS (
+          SELECT DISTINCT
+            COALESCE(NULLIF(s.parent_station, ''), s.stop_id) AS station_id,
+            rg.route_id,
+            rg.from_stop_id AS stop_id
+          FROM route_graph rg
+          JOIN rail_routes rr ON rg.route_id = rr.route_id
+          JOIN gtfs_stops s ON s.system_id = $1 AND s.stop_id = rg.from_stop_id
+          WHERE rg.system_id = $1
+        ),
+        -- All pairs of routes that share a physical transfer station
+        route_xfers AS (
+          SELECT DISTINCT
+            ss1.route_id AS route_a, ss1.stop_id AS stop_a,
+            ss2.route_id AS route_b, ss2.stop_id AS stop_b
+          FROM station_stops ss1
+          JOIN station_stops ss2 ON ss1.station_id = ss2.station_id AND ss1.route_id != ss2.route_id
+        ),
+        -- Two-transfer paths: route1 → (xfer1) → route2 → (xfer2) → route3
+        two_xfer AS (
+          SELECT DISTINCT
+            rx1.route_a AS route1, rx1.stop_a AS t1_stop,
+            rx1.route_b AS route2,
+            rx2.stop_a AS t2_stop, rx2.route_b AS route3
+          FROM from_routes fr
+          JOIN route_xfers rx1 ON rx1.route_a = fr.route_id
+          JOIN route_xfers rx2 ON rx2.route_a = rx1.route_b
+          JOIN to_routes tr ON rx2.route_b = tr.route_id
+          WHERE rx1.route_b != rx2.route_b      -- middle route ≠ final route
+            AND rx1.route_a != rx2.route_b      -- no loop back to starting route
+            AND rx1.stop_a   != rx2.stop_a      -- two distinct physical stations
+        )
+        SELECT DISTINCT ON (route1, route2, route3)
+          route1, t1_stop, route2, t2_stop, route3
+        FROM two_xfer
+        LIMIT 5
+      `, [system, fromStops, toStops]);
+
+      for (const row of twoXferResult.rows) {
+        const [r1Info, r2Info, r3Info, t1Name, t2Name] = await Promise.all([
+          getRouteInfo(pg, system, row.route1),
+          getRouteInfo(pg, system, row.route2),
+          getRouteInfo(pg, system, row.route3),
+          getStopName(pg, system, row.t1_stop),
+          getStopName(pg, system, row.t2_stop),
+        ]);
+        const walkSec = walkTimeSec(walkingPace);
+
+        const [ride1Sec, ride2Sec, ride3Sec] = await Promise.all([
+          estimateRideTime(pg, system, row.route1, fromStops, [row.t1_stop]),
+          estimateRideTime(pg, system, row.route2, [row.t1_stop], [row.t2_stop]),
+          estimateRideTime(pg, system, row.route3, [row.t2_stop], toStops),
+        ]);
+
+        let xfer1Info = { probability: 0.75, transferTime: 120, type: "unknown", notes: null, accessibility: null };
+        let xfer2Info = { probability: 0.75, transferTime: 120, type: "unknown", notes: null, accessibility: null };
+        if (engine) {
+          xfer1Info = engine.calculateConnectionProbability(row.t1_stop, row.t1_stop, 180, { fromRouteId: row.route1, toRouteId: row.route2, rushHour, walkingPace });
+          xfer2Info = engine.calculateConnectionProbability(row.t2_stop, row.t2_stop, 180, { fromRouteId: row.route2, toRouteId: row.route3, rushHour, walkingPace });
+        }
+
+        const totalSec = walkSec + ride1Sec + xfer1Info.transferTime + ride2Sec + xfer2Info.transferTime + ride3Sec;
+        const overallProb = xfer1Info.probability * xfer2Info.probability;
+
+        routes.push({
+          id: `transfer2-${row.route1}-${row.route2}-${row.route3}-${row.t1_stop}-${row.t2_stop}`,
+          type: "two_transfers",
+          totalTimeSec: totalSec,
+          totalTimeMin: Math.round(totalSec / 60),
+          transfers: 2,
+          overallProbability: overallProb,
+          leaveBy: new Date((now - walkSec) * 1000).toISOString(),
+          legs: [
+            { type: "walk", durationSec: walkSec, durationMin: Math.round(walkSec / 60), description: "Walk to stop" },
+            {
+              type: "ride", routeId: row.route1,
+              routeName: r1Info.name, routeColor: r1Info.color,
+              from, to: row.t1_stop,
+              durationSec: ride1Sec, durationMin: Math.round(ride1Sec / 60),
+              direction: "", isRealtime: false,
+            },
+            {
+              type: "transfer", station: t1Name, stationId: row.t1_stop,
+              transferType: xfer1Info.type, transferTimeSec: xfer1Info.transferTime,
+              transferTimeMin: Math.round(xfer1Info.transferTime / 60 * 10) / 10,
+              bufferSec: 180, bufferMin: 3,
+              probability: xfer1Info.probability,
+              probabilityPct: Math.round(xfer1Info.probability * 100),
+              accessibility: xfer1Info.accessibility || null,
+              notes: xfer1Info.notes || null,
+              platformChange: xfer1Info.type !== "same_platform",
+            },
+            {
+              type: "ride", routeId: row.route2,
+              routeName: r2Info.name, routeColor: r2Info.color,
+              from: row.t1_stop, to: row.t2_stop,
+              durationSec: ride2Sec, durationMin: Math.round(ride2Sec / 60),
+              direction: "", isRealtime: false,
+            },
+            {
+              type: "transfer", station: t2Name, stationId: row.t2_stop,
+              transferType: xfer2Info.type, transferTimeSec: xfer2Info.transferTime,
+              transferTimeMin: Math.round(xfer2Info.transferTime / 60 * 10) / 10,
+              bufferSec: 180, bufferMin: 3,
+              probability: xfer2Info.probability,
+              probabilityPct: Math.round(xfer2Info.probability * 100),
+              accessibility: xfer2Info.accessibility || null,
+              notes: xfer2Info.notes || null,
+              platformChange: xfer2Info.type !== "same_platform",
+            },
+            {
+              type: "ride", routeId: row.route3,
+              routeName: r3Info.name, routeColor: r3Info.color,
+              from: row.t2_stop, to,
+              durationSec: ride3Sec, durationMin: Math.round(ride3Sec / 60),
+              direction: "", isRealtime: false,
+            },
+          ],
+        });
+      }
+    } catch (err) {
+      fastify.log.debug({ err: err.message }, "Two-transfer route query failed");
+    }
+
     // Sort and deduplicate
     routes.sort((a, b) => a.totalTimeSec - b.totalTimeSec);
     const seen = new Set();
@@ -308,33 +454,49 @@ async function resolveStopIds(pg, system, stopId) {
     }
   }
 
-  // Step 3: search by stop_name directly (handles user-typed station names)
+  // Step 3: rapid-transit priority name match — finds rail/subway/tram stops first.
+  // Prevents bus stops with the same name (e.g. "Wonderland" bus vs Blue Line)
+  // from shadowing the rapid transit stop and consuming the LIMIT.
+  const railNameMatch = await pg.query(
+    `SELECT DISTINCT s.stop_id FROM gtfs_stops s
+     JOIN route_graph rg ON s.system_id = rg.system_id AND s.stop_id = rg.from_stop_id
+     JOIN gtfs_routes gr ON gr.system_id = s.system_id AND gr.route_id = rg.route_id
+     WHERE s.system_id = $1 AND s.stop_name ILIKE $2 AND gr.route_type IN (0, 1, 2)
+     ORDER BY s.stop_id
+     LIMIT 10`,
+    [system, stopId]
+  );
+  if (railNameMatch.rows.length > 0) {
+    return railNameMatch.rows.map((r) => r.stop_id);
+  }
+
+  // Step 4: exact stop_name match (case-insensitive), any route type
   const exactNameMatch = await pg.query(
     `SELECT s.stop_id FROM gtfs_stops s
      JOIN route_graph rg ON s.system_id = rg.system_id AND s.stop_id = rg.from_stop_id
      WHERE s.system_id = $1 AND s.stop_name ILIKE $2
      ORDER BY length(s.stop_name)
-     LIMIT 5`,
+     LIMIT 10`,
     [system, stopId]
   );
   if (exactNameMatch.rows.length > 0) {
     return exactNameMatch.rows.map((r) => r.stop_id);
   }
 
-  // Step 4: prefix match — user typed a partial name (e.g. "Norristown" matches "Norristown Transit Center")
+  // Step 5: prefix match — user typed a partial name (e.g. "Norristown" matches "Norristown Transit Center")
   const prefixMatch = await pg.query(
     `SELECT s.stop_id FROM gtfs_stops s
      JOIN route_graph rg ON s.system_id = rg.system_id AND s.stop_id = rg.from_stop_id
      WHERE s.system_id = $1 AND s.stop_name ILIKE $2
      ORDER BY length(s.stop_name)
-     LIMIT 5`,
+     LIMIT 10`,
     [system, stopId + '%']
   );
   if (prefixMatch.rows.length > 0) {
     return prefixMatch.rows.map((r) => r.stop_id);
   }
 
-  // Step 5: contains match — handles abbreviations like "Norristown TC" → "Norristown Transit Center"
+  // Step 6: word-intersection match — handles abbreviations like "Norristown TC" → "Norristown Transit Center"
   //         Split on whitespace and match stops containing all significant words
   const words = stopId.split(/\s+/).filter((w) => w.length > 2);
   if (words.length > 0) {
