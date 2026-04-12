@@ -95,6 +95,46 @@ export const SYSTEMS = {
     },
   },
 
+  rtd: {
+    id: "rtd",
+    name: "RTD Denver",
+    city: "Denver",
+    region: { lat: 39.7392, lng: -104.9903, radiusKm: 60 },
+    enabled: true,
+    adapter: "rtd",
+    feeds: {
+      tripUpdates:      ["https://open-data.rtd-denver.com/files/gtfs-rt/rtd/TripUpdate.pb"],
+      vehiclePositions: ["https://open-data.rtd-denver.com/files/gtfs-rt/rtd/VehiclePosition.pb"],
+      alerts:           ["https://open-data.rtd-denver.com/files/gtfs-rt/rtd/Alerts.pb"],
+    },
+    auth: { type: "none" },
+    intervals: { tripUpdates: 15000, vehiclePositions: 30000, alerts: 60000 },
+    staticGtfs: {
+      url: "https://www.rtd-denver.com/files/gtfs/google_transit.zip",
+      refreshDays: 14,
+    },
+  },
+
+  bustang: {
+    id: "bustang",
+    name: "Bustang",
+    city: "Colorado (Statewide)",
+    region: { lat: 39.5501, lng: -105.7821, radiusKm: 300 },
+    enabled: true,
+    adapter: "bustang",
+    feeds: {
+      tripUpdates:      ["https://open-data.rtd-denver.com/files/gtfs-rt/cdot/Bustang_TripUpdate.pb"],
+      vehiclePositions: ["https://open-data.rtd-denver.com/files/gtfs-rt/cdot/Bustang_VehiclePosition.pb"],
+      alerts:           [],
+    },
+    auth: { type: "none" },
+    intervals: { tripUpdates: 30000, vehiclePositions: 60000, alerts: 60000 },
+    staticGtfs: {
+      url: "https://www.rtd-denver.com/files/gtfs/bustang-co-us.zip",
+      refreshDays: 14,
+    },
+  },
+
   cdta: {
     id: "cdta",
     name: "CDTA",
