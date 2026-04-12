@@ -23,7 +23,7 @@ export default async function plannerRoutes(fastify, { pg }) {
 
   fastify.get("/api/v1/plan/:system", async (req, reply) => {
     const { system } = req.params;
-    const { from, to, depart, pace, walkDistKm } = req.query;
+    const { from, to, depart, pace, lat, lng, walkDistKm } = req.query;
 
     if (!SYSTEMS[system]) return reply.code(404).send({ error: "SYSTEM_NOT_FOUND" });
     if (!from || !to) return reply.code(400).send({ error: "MISSING_PARAMS", message: "Both 'from' and 'to' required" });
@@ -502,11 +502,120 @@ export default async function plannerRoutes(fastify, { pg }) {
       fastify.log.debug({ err: err.message }, "Two-transfer route query failed");
     }
 
+    // ─── Extended walk: direct routes from stops within walking distance ────
+    // Finds stops you could walk to (up to 20 min) that have a direct route
+    // to the destination — e.g. "walk 17 min to Hynes, board Green-B direct".
+    const userLat = lat ? parseFloat(lat) : null;
+    const userLng = lng ? parseFloat(lng) : null;
+    const MAX_WALK_MIN = 20;
+    const WALK_SPEED_KMH = { slow: 4.0, average: 5.0, fast: 6.5 }[walkingPace] || 5.0;
+    const MAX_WALK_KM = (MAX_WALK_MIN / 60) * WALK_SPEED_KMH; // ~1.67km at average
+
+    if (userLat && userLng) {
+      try {
+        // Find stops within walking distance that share a route with the destination
+        // but are NOT already the origin (avoid re-suggesting the same stop)
+        const walkableResult = await pg.query(`
+          WITH dest_routes AS (
+            SELECT DISTINCT route_id
+            FROM route_graph
+            WHERE system_id = $1 AND to_stop_id = ANY($2)
+          ),
+          nearby AS (
+            SELECT s.stop_id, s.stop_name, s.stop_lat, s.stop_lon,
+              (6371 * 2 * asin(sqrt(
+                power(sin(radians((s.stop_lat - $3) / 2)), 2) +
+                cos(radians($3)) * cos(radians(s.stop_lat)) *
+                power(sin(radians((s.stop_lon - $4) / 2)), 2)
+              ))) AS dist_km
+            FROM gtfs_stops s
+            WHERE s.system_id = $1
+              AND s.stop_lat IS NOT NULL
+              AND s.stop_lat BETWEEN $3 - 0.03 AND $3 + 0.03
+              AND s.stop_lon BETWEEN $4 - 0.04 AND $4 + 0.04
+          ),
+          walkable AS (
+            SELECT * FROM nearby WHERE dist_km <= $5 AND stop_id != ANY($6)
+          )
+          SELECT DISTINCT w.stop_id, w.stop_name, w.dist_km, rg.route_id
+          FROM walkable w
+          JOIN route_graph rg ON rg.system_id = $1 AND rg.from_stop_id = w.stop_id
+          JOIN dest_routes dr ON dr.route_id = rg.route_id
+          ORDER BY w.dist_km, rg.route_id
+          LIMIT 20
+        `, [system, toStops, userLat, userLng, MAX_WALK_KM, fromStops]);
+
+        // Track routes already added so we pick the closest VALID (correct-direction)
+        // stop for each route and don't add the same route twice.
+        const seenWalkRoutes = new Set();
+        for (const row of walkableResult.rows) {
+          if (seenWalkRoutes.has(row.route_id)) continue;
+
+          const walkKm = parseFloat(row.dist_km);
+          const rawWalkSec = (walkKm / WALK_SPEED_KMH) * 3600;
+          const walkSec = Math.max(60, Math.round(rawWalkSec / 15) * 15);
+          if (walkSec > MAX_WALK_MIN * 60) continue;
+
+          const rideSec = await estimateRideTime(pg, system, row.route_id, [row.stop_id], toStops);
+          // 300s is the hardcoded fallback — it means no trip data was found for this
+          // stop → destination combination, which happens when the stop is directionally
+          // wrong (e.g. inbound platform going away from the destination).  Skip and
+          // let the loop try the next candidate stop for the same route.
+          if (rideSec === 300) continue;
+
+          seenWalkRoutes.add(row.route_id);
+          const routeInfo = await getRouteInfo(pg, system, row.route_id);
+          const totalSec = walkSec + rideSec;
+
+          routes.push({
+            id: `walk-direct-${row.stop_id}-${row.route_id}`,
+            type: "walk_direct",
+            totalTimeSec: totalSec,
+            totalTimeMin: Math.round(totalSec / 60),
+            transfers: 0,
+            overallProbability: null,
+            leaveBy: new Date((now - walkSec) * 1000).toISOString(),
+            legs: [
+              {
+                type: "walk",
+                durationSec: walkSec,
+                durationMin: Math.round(walkSec / 60),
+                description: `Walk ${walkKm.toFixed(1)}km to ${row.stop_name}`,
+                distanceKm: walkKm,
+              },
+              {
+                type: "ride",
+                routeId: row.route_id,
+                routeName: routeInfo.name,
+                routeColor: routeInfo.color,
+                from: row.stop_id,
+                to,
+                durationSec: rideSec,
+                durationMin: Math.round(rideSec / 60),
+                direction: "",
+                isRealtime: false,
+              },
+            ],
+          });
+        }
+      } catch (err) {
+        fastify.log.debug({ err: err.message }, "Extended walk query failed");
+      }
+    }
+
     // Sort and deduplicate
     routes.sort((a, b) => a.totalTimeSec - b.totalTimeSec);
     const seen = new Set();
     const unique = routes.filter((r) => {
-      const key = r.legs.filter((l) => l.routeId).map((l) => l.routeId).join("-");
+      const rideLegs = r.legs.filter((l) => l.routeId);
+      const transferLegs = r.legs.filter((l) => l.type === "transfer");
+      // Key: first route + transfer station(s) + total time bucket (±1 min)
+      // This merges "39→N via Back Bay" and "39→F via Back Bay" since
+      // the user just needs to know "take the 39 to Back Bay, catch any commuter rail"
+      const firstRoute = rideLegs[0]?.routeId ?? "";
+      const transferStops = transferLegs.map((l) => l.stopId ?? l.description ?? "").join("|");
+      const timeBucket = Math.round(r.totalTimeSec / 60);
+      const key = `${firstRoute}::${transferStops}::${timeBucket}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -757,17 +866,23 @@ async function estimateRideTime(pg, system, routeId, fromStops, toStops) {
       if (cur === undefined || sec < cur) depMap.set(r.trip_id, sec);
     }
 
-    // Find minimum travel time (arr_sec > dep_sec ensures correct direction)
-    let minTime = Infinity;
+    // Collect all valid travel times (arr_sec > dep_sec ensures correct direction)
+    const times = [];
     for (const r of arrRes.rows) {
       if (!tripSet.has(r.trip_id) || !r.arrival_time) continue;
       const depSec = depMap.get(r.trip_id);
       if (depSec === undefined) continue;
       const arrSec = toSec(r.arrival_time);
-      if (arrSec > depSec) minTime = Math.min(minTime, arrSec - depSec);
+      if (arrSec > depSec) times.push(arrSec - depSec);
     }
 
-    return minTime === Infinity ? 300 : minTime;
+    if (times.length === 0) return 300;
+
+    // Use the median rather than the minimum — the minimum picks the fastest
+    // possible scheduled run, which systematically underestimates typical
+    // journey time. The median gives a realistic mid-of-day estimate.
+    times.sort((a, b) => a - b);
+    return times[Math.floor(times.length / 2)];
   } catch {
     return 300;
   }

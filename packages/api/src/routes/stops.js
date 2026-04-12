@@ -78,12 +78,17 @@ export default async function stopRoutes(fastify, { pg }) {
       return reply.code(503).send({ error: "DB_UNAVAILABLE" });
     }
 
+    // Only return stops that exist in the route_graph (i.e., the planner can route through them).
+    // This avoids the old LIMIT 500 alphabetical cutoff which excluded many real stops.
     const result = await pg.query(
-      `SELECT DISTINCT ON (stop_name) stop_id, stop_name, stop_lat, stop_lon
-       FROM gtfs_stops
-       WHERE system_id = $1
-       ORDER BY stop_name, stop_id
-       LIMIT 500`,
+      `SELECT DISTINCT ON (s.stop_name) s.stop_id, s.stop_name, s.stop_lat, s.stop_lon
+       FROM gtfs_stops s
+       INNER JOIN route_graph rg
+         ON rg.system_id = s.system_id
+         AND (rg.from_stop_id = s.stop_id OR rg.to_stop_id = s.stop_id)
+       WHERE s.system_id = $1
+         AND s.stop_lat IS NOT NULL
+       ORDER BY s.stop_name, s.stop_id`,
       [system]
     );
 
