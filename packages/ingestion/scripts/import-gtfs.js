@@ -86,6 +86,7 @@ async function main() {
       await importStops(pool, sysId, extractDir);
       await importTrips(pool, sysId, extractDir);
       await importTransfers(pool, sysId, extractDir);
+      await importPathways(pool, sysId, extractDir);
 
       const counts = await getCounts(pool, sysId);
       console.log(`\n  ✅ ${config.name} import complete:`);
@@ -93,6 +94,7 @@ async function main() {
       console.log(`     Stops:     ${counts.stops}`);
       console.log(`     Trips:     ${counts.trips}`);
       console.log(`     Transfers: ${counts.transfers}`);
+      console.log(`     Pathways:  ${counts.pathways}`);
 
     } catch (err) {
       console.error(`\n  ❌ ${config.name} import failed: ${err.message}`);
@@ -410,17 +412,70 @@ async function importTransfers(pool, sysId, dir) {
   console.log(`${inserted} imported`);
 }
 
+// ─── Import Pathways ─────────────────────────────────────────────────────────
+async function importPathways(pool, sysId, dir) {
+  const filePath = join(dir, "pathways.txt");
+  const rows = await parseCSV(filePath);
+  if (rows.length === 0) { console.log("  ℹ  pathways.txt not found (accessibility data will be inferred)"); return 0; }
+
+  process.stdout.write(`  📊 Pathways: ${rows.length}... `);
+  await pool.query("DELETE FROM gtfs_pathways WHERE system_id = $1", [sysId]);
+
+  let inserted = 0;
+  for (let i = 0; i < rows.length; i += 500) {
+    const batch = rows.slice(i, i + 500);
+    const values = []; const params = []; let p = 1;
+    for (const row of batch) {
+      values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+      params.push(
+        sysId,
+        row.pathway_id || "",
+        row.from_stop_id || "",
+        row.to_stop_id || "",
+        parseInt(row.pathway_mode || "1"),
+        parseInt(row.is_bidirectional ?? "1"),
+        row.traversal_time ? parseInt(row.traversal_time) : null,
+        row.length       ? parseFloat(row.length)       : null,
+        row.stair_count  ? parseInt(row.stair_count)    : null,
+        row.max_slope    ? parseFloat(row.max_slope)    : null,
+        row.min_width    ? parseFloat(row.min_width)    : null,
+        row.signposted_as          || null,
+        row.reversed_signposted_as || null,
+      );
+    }
+    await pool.query(
+      `INSERT INTO gtfs_pathways
+         (system_id,pathway_id,from_stop_id,to_stop_id,pathway_mode,is_bidirectional,
+          traversal_time,length,stair_count,max_slope,min_width,signposted_as,reversed_signposted_as)
+       VALUES ${values.join(",")}
+       ON CONFLICT (system_id,pathway_id) DO UPDATE SET
+         from_stop_id=EXCLUDED.from_stop_id, to_stop_id=EXCLUDED.to_stop_id,
+         pathway_mode=EXCLUDED.pathway_mode, is_bidirectional=EXCLUDED.is_bidirectional,
+         traversal_time=EXCLUDED.traversal_time, length=EXCLUDED.length,
+         stair_count=EXCLUDED.stair_count, max_slope=EXCLUDED.max_slope,
+         min_width=EXCLUDED.min_width, signposted_as=EXCLUDED.signposted_as,
+         reversed_signposted_as=EXCLUDED.reversed_signposted_as`,
+      params
+    );
+    inserted += batch.length;
+  }
+  console.log(`${inserted} imported`);
+  return inserted;
+}
+
 // ─── Counts ──────────────────────────────────────────────────────────────────
 async function getCounts(pool, sysId) {
-  const [routes, stops, trips, transfers] = await Promise.all([
+  const [routes, stops, trips, transfers, pathways] = await Promise.all([
     pool.query("SELECT COUNT(*) FROM gtfs_routes WHERE system_id = $1", [sysId]),
     pool.query("SELECT COUNT(*) FROM gtfs_stops WHERE system_id = $1", [sysId]),
     pool.query("SELECT COUNT(*) FROM gtfs_trips WHERE system_id = $1", [sysId]),
     pool.query("SELECT COUNT(*) FROM gtfs_transfers WHERE system_id = $1", [sysId]),
+    pool.query("SELECT COUNT(*) FROM gtfs_pathways WHERE system_id = $1", [sysId]),
   ]);
   return {
     routes: parseInt(routes.rows[0].count), stops: parseInt(stops.rows[0].count),
     trips: parseInt(trips.rows[0].count), transfers: parseInt(transfers.rows[0].count),
+    pathways: parseInt(pathways.rows[0].count),
   };
 }
 

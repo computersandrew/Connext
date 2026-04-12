@@ -50,6 +50,7 @@ export class TransferEngine {
     this.logger = logger?.child({ component: "transfers" }) || console;
     this.transfers = new Map();   // "fromStop:toStop" -> Transfer[]
     this.stationGroups = new Map(); // parent_station -> Set<stop_id>
+    this._pathways = new Map();   // "fromStop:toStop" -> pathway_mode[]  (from pathways.txt)
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -87,7 +88,29 @@ export class TransferEngine {
         this.stationGroups.get(row.parent_station).add(row.stop_id);
       }
 
-      this.logger.info(`Loaded ${this.transfers.size} GTFS transfers, ${this.stationGroups.size} station groups for ${systemId}`);
+      // Load pathways.txt data for real accessibility info
+      // pathway_mode: 1=walkway, 2=stairs, 3=moving_sidewalk, 4=escalator, 5=elevator, 6=fare_gate, 7=exit_gate
+      const pathwayRes = await pg.query(
+        `SELECT from_stop_id, to_stop_id, pathway_mode, is_bidirectional, traversal_time
+         FROM gtfs_pathways WHERE system_id = $1`,
+        [systemId]
+      );
+      for (const row of pathwayRes.rows) {
+        const key  = `${row.from_stop_id}:${row.to_stop_id}`;
+        const entry = { mode: parseInt(row.pathway_mode), traversalTime: row.traversal_time ? parseInt(row.traversal_time) : null };
+        if (!this._pathways.has(key)) this._pathways.set(key, []);
+        this._pathways.get(key).push(entry);
+        // Bidirectional pathways work both ways
+        if (parseInt(row.is_bidirectional || "1")) {
+          const rkey = `${row.to_stop_id}:${row.from_stop_id}`;
+          if (!this._pathways.has(rkey)) this._pathways.set(rkey, []);
+          this._pathways.get(rkey).push(entry);
+        }
+      }
+
+      this.logger.info(
+        `Loaded ${this.transfers.size} GTFS transfers, ${this.stationGroups.size} station groups, ${this._pathways.size} pathway pairs for ${systemId}`
+      );
     } catch (err) {
       this.logger.warn({ err }, `Could not load GTFS transfers for ${systemId}`);
     }
@@ -281,16 +304,22 @@ export class TransferEngine {
       type = TransferType.STREET_WALK;
     }
 
+    // Use real pathway data for accessibility if available
+    const pathwayAccess = this._accessibilityFromPathways(row.from_stop_id, row.to_stop_id);
+    const pathwayTime   = this._traversalTimeFromPathways(row.from_stop_id, row.to_stop_id);
+    // Pathway traversal_time overrides min_transfer_time when it's more specific
+    const effectiveTime = pathwayTime && Math.abs(pathwayTime - fixedTimeSec) < 120 ? pathwayTime : fixedTimeSec;
+
     return {
       fromStopId: row.from_stop_id,
       toStopId: row.to_stop_id,
       fromRouteId: null,
       toRouteId: null,
       type,
-      fixedTimeSec,
-      distribution: this._inferDistribution(type, fixedTimeSec),
-      accessibility: { stairs: false, elevator: false, escalator: false, level: false },
-      notes: null,
+      fixedTimeSec: effectiveTime,
+      distribution: this._inferDistribution(type, effectiveTime),
+      accessibility: pathwayAccess || { stairs: false, elevator: false, escalator: false, level: false },
+      notes: pathwayAccess ? null : null,
       source: "gtfs",
     };
   }
@@ -306,17 +335,21 @@ export class TransferEngine {
 
       if (fromMatch && toMatch) {
         // Same station complex — infer same_station transfer
+        // Use real pathway data for accessibility if available, otherwise guess stairs
+        const pathwayAccess = this._accessibilityFromPathways(fromStopId, toStopId);
+        const pathwayTime   = this._traversalTimeFromPathways(fromStopId, toStopId);
+        const fixedTime     = pathwayTime || 120;
         return {
           fromStopId,
           toStopId,
           fromRouteId: null,
           toRouteId: null,
           type: TransferType.SAME_STATION,
-          fixedTimeSec: 120,
-          distribution: this._inferDistribution(TransferType.SAME_STATION, 120),
-          accessibility: { stairs: true, elevator: false, escalator: false, level: false },
-          notes: "Inferred from shared parent station",
-          source: "inferred",
+          fixedTimeSec: fixedTime,
+          distribution: this._inferDistribution(TransferType.SAME_STATION, fixedTime),
+          accessibility: pathwayAccess || { stairs: true, elevator: false, escalator: false, level: false },
+          notes: pathwayAccess ? "Accessibility from GTFS pathways" : "Inferred from shared parent station",
+          source: pathwayAccess ? "gtfs" : "inferred",
         };
       }
     }
@@ -344,6 +377,38 @@ export class TransferEngine {
       mean: fixedTimeSec,
       stddev: Math.max(10, Math.round(fixedTimeSec * ratio)),
     };
+  }
+
+  /**
+   * Derive real accessibility flags from pathways.txt pathway modes.
+   * Returns null if no pathway data exists for this stop pair.
+   *
+   * pathway_mode: 1=walkway, 2=stairs, 3=moving_sidewalk, 4=escalator, 5=elevator
+   */
+  _accessibilityFromPathways(fromStopId, toStopId) {
+    const key = `${fromStopId}:${toStopId}`;
+    const pathways = this._pathways.get(key);
+    if (!pathways || pathways.length === 0) return null;
+
+    const modes = new Set(pathways.map(p => p.mode));
+    return {
+      stairs:    modes.has(2),
+      escalator: modes.has(4),
+      elevator:  modes.has(5),
+      level:     modes.has(1) && !modes.has(2),  // walkway with no stairs = level/accessible
+    };
+  }
+
+  /**
+   * Find the shortest traversal time for a stop pair from pathways.txt.
+   * Returns null if no pathway data exists.
+   */
+  _traversalTimeFromPathways(fromStopId, toStopId) {
+    const key = `${fromStopId}:${toStopId}`;
+    const pathways = this._pathways.get(key);
+    if (!pathways || pathways.length === 0) return null;
+    const times = pathways.map(p => p.traversalTime).filter(t => t != null && t > 0);
+    return times.length > 0 ? Math.min(...times) : null;
   }
 
   /**

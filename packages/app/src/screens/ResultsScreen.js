@@ -97,7 +97,7 @@ export default function ResultsScreen({ route, navigation, pace }) {
               const nearest = findNearestStop(userLat, userLng, stopsWithData);
               if (nearest && nearest.stopId !== destinationStopId) {
                 setOriginName(nearest.name);
-                const planData = await api.plan(system, nearest.stopId, destinationStopId, { pace });
+                const planData = await api.plan(system, nearest.stopId, destinationStopId, { pace, walkDistKm: nearest.distanceKm });
                 if (planData.routes?.length > 0) {
                   setRoutes(planData.routes);
                   setMode("planner");
