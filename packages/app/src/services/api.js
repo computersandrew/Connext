@@ -59,6 +59,7 @@ export const api = {
     const params = new URLSearchParams({ from, to });
     if (opts.depart) params.set("depart", opts.depart);
     if (opts.pace) params.set("pace", opts.pace);
+    if (opts.walkDistKm != null) params.set("walkDistKm", opts.walkDistKm.toFixed(4));
     return get(`/api/v1/plan/${system}?${params}`);
   },
 

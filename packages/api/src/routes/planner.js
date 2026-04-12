@@ -23,7 +23,7 @@ export default async function plannerRoutes(fastify, { pg }) {
 
   fastify.get("/api/v1/plan/:system", async (req, reply) => {
     const { system } = req.params;
-    const { from, to, depart, pace } = req.query;
+    const { from, to, depart, pace, walkDistKm } = req.query;
 
     if (!SYSTEMS[system]) return reply.code(404).send({ error: "SYSTEM_NOT_FOUND" });
     if (!from || !to) return reply.code(400).send({ error: "MISSING_PARAMS", message: "Both 'from' and 'to' required" });
@@ -32,8 +32,20 @@ export default async function plannerRoutes(fastify, { pg }) {
     const engine = engines.get(system);
     const now = Math.floor(Date.now() / 1000);
     const walkingPace = pace || "average";
+    const walkDistKmNum = walkDistKm != null ? parseFloat(walkDistKm) : null;
     const hour = new Date().getHours();
     const rushHour = (hour >= 7 && hour <= 9) || (hour >= 17 && hour <= 19);
+
+    // Build a human-readable walk description from real distance if available
+    const walkDesc = walkDistKmNum != null
+      ? walkDistKmNum < 0.1
+        ? `Walk ${Math.round(walkDistKmNum * 1000)}m to stop`
+        : `Walk ${walkDistKmNum.toFixed(2)}km to stop`
+      : "Walk to stop";
+
+    // Seconds since midnight — used to find real schedule buffer at transfer points
+    const nowDate = new Date();
+    const secSinceMidnight = nowDate.getHours() * 3600 + nowDate.getMinutes() * 60 + nowDate.getSeconds();
 
     const fromStops = await resolveStopIds(pg, system, from);
     const toStops = await resolveStopIds(pg, system, to);
@@ -62,7 +74,7 @@ export default async function plannerRoutes(fastify, { pg }) {
       for (const row of directResult.rows) {
         const rideSec = await estimateRideTime(pg, system, row.route_id, fromStops, toStops);
         const routeInfo = await getRouteInfo(pg, system, row.route_id);
-        const walkSec = walkTimeSec(walkingPace);
+        const walkSec = walkTimeSec(walkingPace, walkDistKmNum);
 
         routes.push({
           id: `direct-${row.route_id}`,
@@ -73,7 +85,7 @@ export default async function plannerRoutes(fastify, { pg }) {
           overallProbability: null,
           leaveBy: new Date((now - walkSec) * 1000).toISOString(),
           legs: [
-            { type: "walk", durationSec: walkSec, durationMin: Math.round(walkSec / 60), description: "Walk to stop" },
+            { type: "walk", durationSec: walkSec, durationMin: Math.round(walkSec / 60), description: walkDesc, distanceKm: walkDistKmNum ?? null },
             {
               type: "ride", routeId: row.route_id,
               routeName: routeInfo.name, routeColor: routeInfo.color,
@@ -147,7 +159,7 @@ export default async function plannerRoutes(fastify, { pg }) {
         const route1Info = await getRouteInfo(pg, system, row.route1);
         const route2Info = await getRouteInfo(pg, system, row.route2);
         const transferStopName = await getStopName(pg, system, row.transfer_rep);
-        const walkSec = walkTimeSec(walkingPace);
+        const walkSec = walkTimeSec(walkingPace, walkDistKmNum);
 
         // Each leg uses the correct stop-ID array for its route at the transfer station:
         //   Leg 1: origin → route1's stops at the transfer station
@@ -157,10 +169,22 @@ export default async function plannerRoutes(fastify, { pg }) {
 
         let transferInfo = { probability: 0.75, transferTime: 120, type: "unknown", notes: null, accessibility: null };
         if (engine) {
-          transferInfo = engine.calculateConnectionProbability(
+          // First pass with default buffer to get the transfer's minimum time
+          const defaultInfo = engine.calculateConnectionProbability(
             row.transfer_rep, row.transfer_rep, 180,
             { fromRouteId: row.route1, toRouteId: row.route2, rushHour, walkingPace }
           );
+          // Compute real buffer: how long until route2 departs after we arrive
+          const estimatedArrival = secSinceMidnight + walkSec + ride1Sec;
+          const scheduleBuf = await getScheduleBuffer(
+            pg, system, row.route2, row.stops_r2, estimatedArrival, defaultInfo.transferTime
+          );
+          const bufferSec = scheduleBuf ?? 180;
+          transferInfo = engine.calculateConnectionProbability(
+            row.transfer_rep, row.transfer_rep, bufferSec,
+            { fromRouteId: row.route1, toRouteId: row.route2, rushHour, walkingPace }
+          );
+          transferInfo._bufferSec = bufferSec;  // carry through for display
         }
 
         const totalSec = walkSec + ride1Sec + transferInfo.transferTime + ride2Sec;
@@ -174,7 +198,7 @@ export default async function plannerRoutes(fastify, { pg }) {
           overallProbability: transferInfo.probability,
           leaveBy: new Date((now - walkSec) * 1000).toISOString(),
           legs: [
-            { type: "walk", durationSec: walkSec, durationMin: Math.round(walkSec / 60), description: "Walk to stop" },
+            { type: "walk", durationSec: walkSec, durationMin: Math.round(walkSec / 60), description: walkDesc, distanceKm: walkDistKmNum ?? null },
             {
               type: "ride", routeId: row.route1,
               routeName: route1Info.name, routeColor: route1Info.color,
@@ -187,7 +211,8 @@ export default async function plannerRoutes(fastify, { pg }) {
               transferType: transferInfo.type,
               transferTimeSec: transferInfo.transferTime,
               transferTimeMin: Math.round(transferInfo.transferTime / 60 * 10) / 10,
-              bufferSec: 180, bufferMin: 3,
+              bufferSec: transferInfo._bufferSec ?? 180,
+              bufferMin: Math.round((transferInfo._bufferSec ?? 180) / 60),
               probability: transferInfo.probability,
               probabilityPct: Math.round(transferInfo.probability * 100),
               accessibility: transferInfo.accessibility || null,
@@ -371,7 +396,7 @@ export default async function plannerRoutes(fastify, { pg }) {
 
         // Process all combos in parallel — estimateRideTime calls are concurrent
         // across combos, limited naturally by the database connection pool.
-        const walkSec = walkTimeSec(walkingPace);
+        const walkSec = walkTimeSec(walkingPace, walkDistKmNum);
 
         const comboResults = await Promise.all(twoXferResult.rows.map(async (row) => {
           const [ride1Sec, ride2Sec, ride3Sec] = await Promise.all([
@@ -393,8 +418,19 @@ export default async function plannerRoutes(fastify, { pg }) {
           let xfer1Info = { probability: 0.75, transferTime: 120, type: "unknown", notes: null, accessibility: null };
           let xfer2Info = { probability: 0.75, transferTime: 120, type: "unknown", notes: null, accessibility: null };
           if (engine) {
-            xfer1Info = engine.calculateConnectionProbability(row.t1_rep, row.t1_rep, 180, { fromRouteId: row.route1, toRouteId: row.route2, rushHour, walkingPace });
-            xfer2Info = engine.calculateConnectionProbability(row.t2_rep, row.t2_rep, 180, { fromRouteId: row.route2, toRouteId: row.route3, rushHour, walkingPace });
+            // Transfer 1: after ride1
+            const defaultX1 = engine.calculateConnectionProbability(row.t1_rep, row.t1_rep, 180, { fromRouteId: row.route1, toRouteId: row.route2, rushHour, walkingPace });
+            const arr1 = secSinceMidnight + walkSec + ride1Sec;
+            const buf1 = (await getScheduleBuffer(pg, system, row.route2, row.t1_stops_r2, arr1, defaultX1.transferTime)) ?? 180;
+            xfer1Info = engine.calculateConnectionProbability(row.t1_rep, row.t1_rep, buf1, { fromRouteId: row.route1, toRouteId: row.route2, rushHour, walkingPace });
+            xfer1Info._bufferSec = buf1;
+
+            // Transfer 2: after ride1 + xfer1 wait + ride2
+            const arr2 = arr1 + buf1 + ride2Sec;
+            const defaultX2 = engine.calculateConnectionProbability(row.t2_rep, row.t2_rep, 180, { fromRouteId: row.route2, toRouteId: row.route3, rushHour, walkingPace });
+            const buf2 = (await getScheduleBuffer(pg, system, row.route3, row.t2_stops_r3, arr2, defaultX2.transferTime)) ?? 180;
+            xfer2Info = engine.calculateConnectionProbability(row.t2_rep, row.t2_rep, buf2, { fromRouteId: row.route2, toRouteId: row.route3, rushHour, walkingPace });
+            xfer2Info._bufferSec = buf2;
           }
 
           const totalSec = walkSec + ride1Sec + xfer1Info.transferTime + ride2Sec + xfer2Info.transferTime + ride3Sec;
@@ -409,7 +445,7 @@ export default async function plannerRoutes(fastify, { pg }) {
             overallProbability: overallProb,
             leaveBy: new Date((now - walkSec) * 1000).toISOString(),
             legs: [
-              { type: "walk", durationSec: walkSec, durationMin: Math.round(walkSec / 60), description: "Walk to stop" },
+              { type: "walk", durationSec: walkSec, durationMin: Math.round(walkSec / 60), description: walkDesc, distanceKm: walkDistKmNum ?? null },
               {
                 type: "ride", routeId: row.route1,
                 routeName: r1Info.name, routeColor: r1Info.color,
@@ -421,7 +457,7 @@ export default async function plannerRoutes(fastify, { pg }) {
                 type: "transfer", station: t1Name, stationId: row.t1_rep,
                 transferType: xfer1Info.type, transferTimeSec: xfer1Info.transferTime,
                 transferTimeMin: Math.round(xfer1Info.transferTime / 60 * 10) / 10,
-                bufferSec: 180, bufferMin: 3,
+                bufferSec: xfer1Info._bufferSec ?? 180, bufferMin: Math.round((xfer1Info._bufferSec ?? 180) / 60),
                 probability: xfer1Info.probability,
                 probabilityPct: Math.round(xfer1Info.probability * 100),
                 accessibility: xfer1Info.accessibility || null,
@@ -439,7 +475,7 @@ export default async function plannerRoutes(fastify, { pg }) {
                 type: "transfer", station: t2Name, stationId: row.t2_rep,
                 transferType: xfer2Info.type, transferTimeSec: xfer2Info.transferTime,
                 transferTimeMin: Math.round(xfer2Info.transferTime / 60 * 10) / 10,
-                bufferSec: 180, bufferMin: 3,
+                bufferSec: xfer2Info._bufferSec ?? 180, bufferMin: Math.round((xfer2Info._bufferSec ?? 180) / 60),
                 probability: xfer2Info.probability,
                 probabilityPct: Math.round(xfer2Info.probability * 100),
                 accessibility: xfer2Info.accessibility || null,
@@ -635,6 +671,55 @@ async function resolveStopIds(pg, system, stopId) {
   return ids.length > 0 ? ids : [stopId];
 }
 
+/**
+ * Find how many seconds until the next departure of routeId from any of transferStopIds,
+ * given that we expect to arrive at the transfer station at estimatedArrivalSec
+ * (seconds since midnight) and need at least minTransferSec to make the connection.
+ *
+ * Returns the total buffer (next_departure - arrival), or null if schedule data
+ * is unavailable (caller should fall back to a default).
+ */
+async function getScheduleBuffer(pg, system, routeId, transferStopIds, estimatedArrivalSec, minTransferSec) {
+  try {
+    const earliest = estimatedArrivalSec + minTransferSec;
+
+    const [tripRes, depRes] = await Promise.all([
+      pg.query('SELECT trip_id FROM gtfs_trips WHERE system_id=$1 AND route_id=$2', [system, routeId]),
+      pg.query(
+        'SELECT trip_id, departure_time FROM gtfs_stop_times WHERE system_id=$1 AND stop_id=ANY($2) LIMIT 3000',
+        [system, transferStopIds]
+      ),
+    ]);
+
+    if (tripRes.rows.length === 0) return null;
+    const tripSet = new Set(tripRes.rows.map(r => r.trip_id));
+
+    const toSec = t => {
+      const [h, m, s] = t.split(':').map(Number);
+      return h * 3600 + m * 60 + s;
+    };
+
+    let nextDep = Infinity;
+    for (const r of depRes.rows) {
+      if (!tripSet.has(r.trip_id) || !r.departure_time) continue;
+      const depSec = toSec(r.departure_time);
+      // Also check next-day wrap (GTFS times can exceed 24h for overnight schedules)
+      for (const candidate of [depSec, depSec + 86400]) {
+        if (candidate >= earliest && candidate < nextDep) nextDep = candidate;
+      }
+    }
+
+    if (nextDep === Infinity) return null;
+
+    // Buffer = time from when we arrive at the station to when the next train/bus leaves
+    // Cap at 30 min — longer waits should still show as long but won't skew probability
+    const buffer = Math.min(nextDep - estimatedArrivalSec, 1800);
+    return buffer > 0 ? buffer : null;
+  } catch {
+    return null;
+  }
+}
+
 async function estimateRideTime(pg, system, routeId, fromStops, toStops) {
   // Fast JS approach: 3 parallel queries + in-memory join.
   // Avoids the bad nested-loop query plans that PostgreSQL generates when
@@ -719,6 +804,18 @@ async function getStopName(pg, system, stopId) {
   }
 }
 
-function walkTimeSec(pace) {
+// Walking speeds in km/h: slow ~4, average ~5, fast ~6.5
+const WALK_SPEED_KMH = { slow: 4.0, average: 5.0, fast: 6.5 };
+// Minimum walk time even if you're standing at the stop (boarding/platform time)
+const MIN_WALK_SEC = 60;
+
+function walkTimeSec(pace, distKm = null) {
+  const speedKmH = WALK_SPEED_KMH[pace] || WALK_SPEED_KMH.average;
+  if (distKm != null && !isNaN(distKm) && distKm >= 0) {
+    // Real distance → real walk time, rounded to nearest 15 seconds
+    const rawSec = (distKm / speedKmH) * 3600;
+    return Math.max(MIN_WALK_SEC, Math.round(rawSec / 15) * 15);
+  }
+  // Fallback when no GPS distance provided (legacy flat estimates)
   return { slow: 360, average: 240, fast: 150 }[pace] || 240;
 }

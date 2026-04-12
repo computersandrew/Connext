@@ -3,11 +3,13 @@ import * as Location from "expo-location";
 
 // System bounding regions (center + radius in km)
 const SYSTEM_REGIONS = [
-  { id: "mta",   name: "MTA",   lat: 40.7128, lng: -74.0060, radiusKm: 35 },
-  { id: "mbta",  name: "MBTA",  lat: 42.3601, lng: -71.0589, radiusKm: 40 },
-  { id: "cta",   name: "CTA",   lat: 41.8781, lng: -87.6298, radiusKm: 30 },
-  { id: "septa", name: "SEPTA", lat: 39.9526, lng: -75.1652, radiusKm: 30 },
-  { id: "cdta",  name: "CDTA",  lat: 42.6526, lng: -73.7562, radiusKm: 70 },
+  { id: "mta",     name: "MTA",             lat: 40.7128, lng: -74.0060,  radiusKm: 35  },
+  { id: "mbta",    name: "MBTA",            lat: 42.3601, lng: -71.0589,  radiusKm: 40  },
+  { id: "cta",     name: "CTA",             lat: 41.8781, lng: -87.6298,  radiusKm: 30  },
+  { id: "septa",   name: "SEPTA",           lat: 39.9526, lng: -75.1652,  radiusKm: 30  },
+  { id: "cdta",    name: "CDTA",            lat: 42.6526, lng: -73.7562,  radiusKm: 70  },
+  { id: "rtd",     name: "RTD Denver",      lat: 39.7392, lng: -104.9903, radiusKm: 60  },
+  { id: "bustang", name: "Bustang",         lat: 39.5501, lng: -105.7821, radiusKm: 300 },
 ];
 
 function haversineKm(lat1, lon1, lat2, lon2) {
