@@ -10,6 +10,7 @@ export class FeedFetcher {
   constructor(logger) {
     this.logger = logger.child({ component: "fetcher" });
     this.config = INGESTION_CONFIG;
+    this._warnedEnvVars = new Set(); // warn once per missing env var
   }
 
   /**
@@ -98,7 +99,10 @@ export class FeedFetcher {
 
     const apiKey = process.env[auth.envVar];
     if (!apiKey) {
-      this.logger.warn(`Missing env var ${auth.envVar} for query auth`);
+      if (!this._warnedEnvVars.has(auth.envVar)) {
+        this._warnedEnvVars.add(auth.envVar);
+        this.logger.warn(`Missing env var ${auth.envVar} — feeds will run unauthenticated`);
+      }
       return url;
     }
 
@@ -120,7 +124,10 @@ export class FeedFetcher {
       if (apiKey) {
         headers[auth.headerName] = apiKey;
       } else {
-        this.logger.warn(`Missing env var ${auth.envVar} for header auth`);
+        if (!this._warnedEnvVars.has(auth.envVar)) {
+          this._warnedEnvVars.add(auth.envVar);
+          this.logger.warn(`Missing env var ${auth.envVar} — feeds will run unauthenticated`);
+        }
       }
     }
 

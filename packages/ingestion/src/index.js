@@ -10,7 +10,11 @@
 //   LOG_LEVEL=debug npm start     # verbose logging
 // ─────────────────────────────────────────────────────────────────────────────
 
-import "dotenv/config";
+import dotenv from "dotenv";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
+// Load .env from project root (3 levels up from packages/ingestion/src/)
+dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), "../../../.env") });
 import { createRequire } from "module";
 import pino from "pino";
 import Redis from "ioredis";

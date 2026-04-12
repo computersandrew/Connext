@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from "react";
 import { View, Text, ScrollView, Pressable, ActivityIndicator, Animated } from "react-native";
 import { useTheme, spacing, fontSize, radius, confidenceColor, urgencyColor } from "../theme";
 import { api, connectDepartureStream } from "../services/api";
-import { findNearestStop } from "../services/location";
+import { findNearestStops } from "../services/location";
 import { API_BASE } from "../services/api";
 
 function LinePill({ name, color, size = 28 }) {
@@ -94,15 +94,32 @@ export default function ResultsScreen({ route, navigation, pace }) {
             const activeSet = new Set(depData.stops || []);
             const stopsWithData = (data.stops || []).filter((s) => activeSet.has(s.stopId));
             if (stopsWithData.length > 0) {
-              const nearest = findNearestStop(userLat, userLng, stopsWithData);
-              if (nearest && nearest.stopId !== destinationStopId) {
-                setOriginName(nearest.name);
-                const planData = await api.plan(system, nearest.stopId, destinationStopId, { pace, walkDistKm: nearest.distanceKm });
-                if (planData.routes?.length > 0) {
-                  setRoutes(planData.routes);
-                  setMode("planner");
-                  foundRoutes = true;
-                }
+              // Try up to 10 nearest stops — the closest may be a bus stop with no
+              // route to the destination, so we fall through until one works.
+              const candidates = findNearestStops(userLat, userLng, stopsWithData, 10);
+              for (const candidate of candidates) {
+                if (candidate.stopId === destinationStopId) continue;
+                try {
+                  const planData = await api.plan(system, candidate.stopId, destinationStopId, {
+                    pace,
+                    walkDistKm: candidate.distanceKm,
+                    lat: userLat,
+                    lng: userLng,
+                  });
+                  // Accept this candidate only if it has direct or transfer routes
+                  // (not just walk_direct, which come from lat/lng and are independent
+                  // of the origin stop — we'll get those from any valid candidate).
+                  const hasRealRoutes = planData.routes?.some(
+                    (r) => r.type === "direct" || r.type === "one_transfer" || r.type === "two_transfers"
+                  );
+                  if (hasRealRoutes) {
+                    setOriginName(candidate.name);
+                    setRoutes(planData.routes);
+                    setMode("planner");
+                    foundRoutes = true;
+                    break;
+                  }
+                } catch {}
               }
             }
           } catch {}
@@ -269,6 +286,13 @@ export default function ResultsScreen({ route, navigation, pace }) {
                   return null;
                 })}
               </View>
+
+              {/* Walk destination (for walk_direct routes) */}
+              {rt.type === "walk_direct" && rt.legs.filter((l) => l.type === "walk" && l.description).map((leg, i) => (
+                <Text key={`wd-${i}`} style={{ fontSize: 12, color: colors.textMuted, marginTop: 10 }}>
+                  {leg.description}
+                </Text>
+              ))}
 
               {/* Transfer station name */}
               {rt.legs.filter((l) => l.type === "transfer").map((leg, i) => (

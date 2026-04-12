@@ -1,6 +1,11 @@
 // src/services/api.js
-const API_BASE = "http://129.161.196.150:3000";
-const WS_BASE = "ws://129.161.196.150:3000";
+// On web, use the same host as the page (works for localhost preview and LAN).
+// On native (iOS/Android), fall back to the configured LAN IP.
+const NATIVE_IP = "129.161.144.193";
+const _isWeb = typeof window !== "undefined" && typeof document !== "undefined";
+const _apiHost = _isWeb ? window.location.hostname : NATIVE_IP;
+const API_BASE = `http://${_apiHost}:3000`;
+const WS_BASE = `ws://${_apiHost}:3000`;
 
 async function get(path) {
   try {
@@ -60,6 +65,8 @@ export const api = {
     if (opts.depart) params.set("depart", opts.depart);
     if (opts.pace) params.set("pace", opts.pace);
     if (opts.walkDistKm != null) params.set("walkDistKm", opts.walkDistKm.toFixed(4));
+    if (opts.lat != null) params.set("lat", opts.lat.toFixed(6));
+    if (opts.lng != null) params.set("lng", opts.lng.toFixed(6));
     return get(`/api/v1/plan/${system}?${params}`);
   },
 
