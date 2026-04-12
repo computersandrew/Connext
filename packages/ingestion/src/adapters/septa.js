@@ -30,8 +30,8 @@ const SEPTA_API = {
   busDetours:     "https://www3.septa.org/api/BusDetours/",
 };
 
-// Routes we actively poll TransitView for (subway + trolley lines)
-const TRANSIT_ROUTES = ["MFL", "BSL", "NHSL", "10", "11", "13", "34", "36", "101", "102"];
+// Subway + trolley route IDs (get special type tagging in live data)
+const RAIL_ROUTES = new Set(["MFL", "BSL", "NHSL", "10", "11", "13", "34", "36", "101", "102"]);
 
 // Key stations to poll Arrivals for (gives us departure boards)
 let KEY_STATIONS = [
@@ -200,8 +200,7 @@ export default class SeptaAdapter extends BaseAdapter {
       for (const [routeId, vehicleList] of Object.entries(routeObj)) {
         if (!Array.isArray(vehicleList)) continue;
 
-        // Only cache subway/trolley routes we care about
-        const isTracked = TRANSIT_ROUTES.includes(routeId);
+        const isRail = RAIL_ROUTES.has(routeId);
         const routeInfo = this._resolveRoute(routeId);
 
         const vehicles = vehicleList.map((v) => ({
@@ -209,6 +208,7 @@ export default class SeptaAdapter extends BaseAdapter {
           tripId: String(v.trip || v.Trip || ""),
           routeId: routeId,
           routeName: routeInfo.name,
+          routeType: isRail ? routeInfo.type : "bus",
           lat: parseFloat(v.lat || v.Lat || 0),
           lng: parseFloat(v.lng || v.Lng || 0),
           bearing: v.heading ? parseFloat(v.heading) : null,
@@ -218,7 +218,7 @@ export default class SeptaAdapter extends BaseAdapter {
           timestamp: Date.now() / 1000,
         })).filter((v) => v.lat !== 0 && v.lng !== 0);
 
-        if (vehicles.length > 0 && isTracked) {
+        if (vehicles.length > 0) {
           pipeline.setex(`vehicles:${this.id}:${routeId}`, ttl, JSON.stringify(vehicles));
           totalVehicles += vehicles.length;
         }

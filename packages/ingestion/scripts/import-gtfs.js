@@ -168,18 +168,55 @@ async function extractGtfs(zipPath, destDir) {
       mkdirSync(secDir, { recursive: true });
       execSync(`unzip -o -q -j "${join(destDir, secondaryZip)}" -d "${secDir}"`, { stdio: "pipe" });
 
-      for (const fileName of ["routes.txt", "stops.txt", "trips.txt", "transfers.txt"]) {
+      const filesToMerge = [
+        "routes.txt", "stops.txt", "trips.txt", "transfers.txt",
+        "calendar.txt", "calendar_dates.txt", "stop_times.txt",
+      ];
+
+      for (const fileName of filesToMerge) {
         const secFile = join(secDir, fileName);
         const mainFile = join(destDir, fileName);
-        if (existsSync(secFile)) {
-          const content = await readFile(secFile, "utf-8");
-          const lines = content.split("\n").slice(1).filter((l) => l.trim());
-          if (lines.length > 0) {
-            if (existsSync(mainFile)) {
-              appendFileSync(mainFile, "\n" + lines.join("\n"));
-            } else {
-              execSync(`cp "${secFile}" "${mainFile}"`, { stdio: "pipe" });
-            }
+        if (!existsSync(secFile)) continue;
+
+        if (!existsSync(mainFile)) {
+          // No primary file — just copy secondary as-is
+          execSync(`cp "${secFile}" "${mainFile}"`, { stdio: "pipe" });
+          continue;
+        }
+
+        // Compare headers to decide if re-projection is needed
+        const mainHeaderLine = execSync(`head -1 "${mainFile}"`).toString().trim().replace(/^\uFEFF/, "");
+        const secHeaderLine  = execSync(`head -1 "${secFile}"`).toString().trim().replace(/^\uFEFF/, "");
+
+        if (mainHeaderLine === secHeaderLine) {
+          // Headers match — use efficient shell append (handles large files like stop_times)
+          execSync(`tail -n +2 "${secFile}" >> "${mainFile}"`, { stdio: "pipe" });
+        } else {
+          // Headers differ — re-project secondary rows to match primary column order
+          const mainCols = mainHeaderLine.split(",").map((c) => c.trim().replace(/"/g, ""));
+          const secCols  = secHeaderLine.split(",").map((c) => c.trim().replace(/"/g, ""));
+
+          const secContent = await readFile(secFile, "utf-8");
+          const secLines   = secContent.split("\n").slice(1).filter((l) => l.trim());
+
+          const projectedLines = [];
+          for (const line of secLines) {
+            const values = parseCSVLine(line);
+            if (values.length !== secCols.length) continue;
+
+            const rowObj = {};
+            for (let i = 0; i < secCols.length; i++) rowObj[secCols[i]] = values[i];
+
+            const projected = mainCols.map((col) => {
+              const val = rowObj[col] !== undefined ? rowObj[col] : "";
+              return val.includes(",") || val.includes('"')
+                ? `"${val.replace(/"/g, '""')}"` : val;
+            });
+            projectedLines.push(projected.join(","));
+          }
+
+          if (projectedLines.length > 0) {
+            appendFileSync(mainFile, "\n" + projectedLines.join("\n"));
           }
         }
       }
