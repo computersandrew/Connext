@@ -109,14 +109,17 @@ export default async function plannerRoutes(fastify, { pg }) {
         -- stop_id so that routes sharing a stop ID (MTA) still match correctly.
         route_station_stops AS (
           SELECT
-            COALESCE(NULLIF(s.parent_station, ''), s.stop_id) AS station_id,
+            -- Group by parent_station when set (MBTA).
+            -- Fall back to stop_name so same-named stops across different lines
+            -- (e.g. SEPTA "15th St/City Hall" on BSL and MFL) are treated as one station.
+            COALESCE(NULLIF(s.parent_station, ''), s.stop_name) AS station_id,
             rg.route_id,
             ARRAY_AGG(DISTINCT rg.from_stop_id) AS stop_ids,
             MIN(rg.from_stop_id) AS rep_stop_id
           FROM route_graph rg
           JOIN gtfs_stops s ON s.system_id = $1 AND s.stop_id = rg.from_stop_id
           WHERE rg.system_id = $1
-          GROUP BY COALESCE(NULLIF(s.parent_station, ''), s.stop_id), rg.route_id
+          GROUP BY COALESCE(NULLIF(s.parent_station, ''), s.stop_name), rg.route_id
         ),
         -- Any two routes that share a physical station form a transfer candidate.
         -- Returns stop-ID arrays for BOTH routes so each ride leg uses the correct stops.
@@ -238,30 +241,40 @@ export default async function plannerRoutes(fastify, { pg }) {
           FROM route_graph rg JOIN rail_routes rr ON rg.route_id = rr.route_id
           WHERE rg.system_id = $1 AND (rg.from_stop_id = ANY($3) OR rg.to_stop_id = ANY($3))
         ),
-        -- All stops visited by from_routes (used to find middle-leg candidates).
-        from_route_stops AS (
-          SELECT DISTINCT rg.from_stop_id AS stop_id
+        -- Station keys visited by from_routes — used to identify middle-leg candidates.
+        -- Uses stop_name fallback (same as route_station_stops) so that agencies with
+        -- different stop IDs for the same physical station still match (e.g. SEPTA
+        -- BSL stop 15497 and MFL stop 416 both named "69th St Transit Center").
+        from_station_keys AS (
+          SELECT DISTINCT COALESCE(NULLIF(s.parent_station, ''), s.stop_name) AS station_key
           FROM route_graph rg
           JOIN from_routes fr ON rg.route_id = fr.route_id
+          JOIN gtfs_stops s ON s.system_id = $1 AND s.stop_id = rg.from_stop_id
           WHERE rg.system_id = $1
         ),
-        -- All stops visited by to_routes (used to find middle-leg candidates).
-        to_route_stops AS (
-          SELECT DISTINCT rg.from_stop_id AS stop_id
+        -- Station keys visited by to_routes.
+        to_station_keys AS (
+          SELECT DISTINCT COALESCE(NULLIF(s.parent_station, ''), s.stop_name) AS station_key
           FROM route_graph rg
           JOIN to_routes tr ON rg.route_id = tr.route_id
+          JOIN gtfs_stops s ON s.system_id = $1 AND s.stop_id = rg.from_stop_id
           WHERE rg.system_id = $1
         ),
-        -- Routes that serve at least one stop in common with from_routes AND at least
-        -- one stop in common with to_routes.  These are the only viable middle routes.
-        -- For large pure-bus systems this shrinks the search space by 10–50×.
+        -- Routes that touch at least one station shared with from_routes AND at least
+        -- one station shared with to_routes. Uses station-name matching so that routes
+        -- connecting at the same physical station (different stop IDs) are included.
         middle_routes AS (
-          SELECT DISTINCT rg1.route_id
-          FROM route_graph rg1
-          JOIN from_route_stops fs ON rg1.from_stop_id = fs.stop_id
-          JOIN route_graph rg2 ON rg2.system_id = $1 AND rg2.route_id = rg1.route_id
-          JOIN to_route_stops ts ON rg2.from_stop_id = ts.stop_id
-          WHERE rg1.system_id = $1
+          SELECT DISTINCT rg.route_id
+          FROM route_graph rg
+          JOIN gtfs_stops s ON s.system_id = $1 AND s.stop_id = rg.from_stop_id
+          WHERE rg.system_id = $1
+            AND COALESCE(NULLIF(s.parent_station, ''), s.stop_name) IN (SELECT station_key FROM from_station_keys)
+          INTERSECT
+          SELECT DISTINCT rg.route_id
+          FROM route_graph rg
+          JOIN gtfs_stops s ON s.system_id = $1 AND s.stop_id = rg.from_stop_id
+          WHERE rg.system_id = $1
+            AND COALESCE(NULLIF(s.parent_station, ''), s.stop_name) IN (SELECT station_key FROM to_station_keys)
         ),
         -- Only build route_station_stops for the small set of relevant routes:
         -- from_routes + to_routes + middle_routes.  Excludes the vast majority of
@@ -272,10 +285,11 @@ export default async function plannerRoutes(fastify, { pg }) {
           UNION SELECT route_id FROM middle_routes
         ),
         -- Stops grouped by (physical_station, route) — only for relevant routes.
-        -- COALESCE uses parent_station when set (MBTA) or falls back to stop_id.
+        -- Fall back to stop_name so same-named stops on different lines at the
+        -- same station (e.g. SEPTA BSL and MFL at "15th St/City Hall") group together.
         route_station_stops AS (
           SELECT
-            COALESCE(NULLIF(s.parent_station, ''), s.stop_id) AS station_id,
+            COALESCE(NULLIF(s.parent_station, ''), s.stop_name) AS station_id,
             rg.route_id,
             ARRAY_AGG(DISTINCT rg.from_stop_id) AS stop_ids,
             MIN(rg.from_stop_id) AS rep_stop_id   -- representative ID for display
@@ -283,7 +297,7 @@ export default async function plannerRoutes(fastify, { pg }) {
           JOIN relevant_routes rr ON rg.route_id = rr.route_id
           JOIN gtfs_stops s ON s.system_id = $1 AND s.stop_id = rg.from_stop_id
           WHERE rg.system_id = $1
-          GROUP BY COALESCE(NULLIF(s.parent_station, ''), s.stop_id), rg.route_id
+          GROUP BY COALESCE(NULLIF(s.parent_station, ''), s.stop_name), rg.route_id
         ),
         -- Transfer pairs among relevant routes sharing a physical station.
         -- station_id is propagated so two_xfer can enforce distinct transfer stations.
