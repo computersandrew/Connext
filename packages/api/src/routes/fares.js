@@ -156,10 +156,102 @@ export default async function fareRoutes(fastify, { pg }) {
   });
 }
 
+// ─── SEPTA Regional Rail zone fare tables ────────────────────────────────────
+// Prices as of April 2026, SEPTA Key / Contactless card.
+// Source: septa.org/fares
+const SEPTA_ZONE_WEEKDAY = { 1: 5.00, 2: 6.50, 3: 7.75, 4: 8.75 };
+const SEPTA_ZONE_WEEKEND = { 1: 5.00, 2: 6.00, 3: 7.00, 4: 8.00 };
+const SEPTA_LOCAL_FARE   = 5.00;   // both stops outside CC on same branch
+const SEPTA_EXTENDED_FARE = 8.75;  // both stops outside CC, crossing Center City
+const SEPTA_NJ_FARE      = 11.00;  // any trip involving NJ stops
+
+// Parse a SEPTA zone_id string from stops.txt into { zone, suffix }.
+// Examples: "CC" → {zone:"CC"}, "2N" → {zone:2, suffix:"N"}, "NJ" → {zone:"NJ"}
+function parseSeptaZoneId(zoneId) {
+  if (!zoneId) return { zone: null, suffix: null };
+  const z = zoneId.trim().toUpperCase();
+  if (z === "CC") return { zone: "CC", suffix: null };
+  if (z === "NJ") return { zone: "NJ", suffix: null };
+  const m = z.match(/^(\d+)([NS]?)$/);
+  if (m) return { zone: parseInt(m[1]), suffix: m[2] || null };
+  return { zone: null, suffix: null };
+}
+
+// Compute the SEPTA Regional Rail fare for a given origin/destination zone pair.
+// Returns { price, label, note } or null if zones are unknown/non-rail.
+function computeSeptaZoneFare(fromZoneId, toZoneId, isWeekend) {
+  const rates = isWeekend ? SEPTA_ZONE_WEEKEND : SEPTA_ZONE_WEEKDAY;
+  const from = parseSeptaZoneId(fromZoneId);
+  const to   = parseSeptaZoneId(toZoneId);
+
+  if (from.zone === null || to.zone === null) return null; // non-rail / unknown
+
+  // NJ service
+  if (from.zone === "NJ" || to.zone === "NJ") {
+    return { price: SEPTA_NJ_FARE, label: "$11.00", note: "NJ service" };
+  }
+
+  // Both CC (same station group — shouldn't appear in a real trip)
+  if (from.zone === "CC" && to.zone === "CC") {
+    return { price: SEPTA_LOCAL_FARE, label: "$5.00", note: "Local" };
+  }
+
+  // One end is Center City → use the numbered zone of the other stop
+  if (from.zone === "CC" || to.zone === "CC") {
+    const outerZone = from.zone === "CC" ? to.zone : from.zone;
+    const price = rates[outerZone] ?? SEPTA_LOCAL_FARE;
+    return { price, label: `$${price.toFixed(2)}`, note: "SEPTA Key/Contactless" };
+  }
+
+  // Both stops are outside Center City
+  if (from.suffix && to.suffix && from.suffix === to.suffix) {
+    // Same branch direction (e.g. 1N → 3N) — Local trip, no CC passage
+    return { price: SEPTA_LOCAL_FARE, label: "$5.00", note: "Local trip" };
+  }
+
+  // Different branch directions (e.g. 2N → 2S) — Extended trip through CC
+  return { price: SEPTA_EXTENDED_FARE, label: "$8.75", note: "Extended trip" };
+}
+
+// Query zone_ids for two stops and return a zone-based fare object.
+async function getSeptaZoneFare(pg, fromStopId, toStopId, log) {
+  try {
+    const res = await pg.query(
+      `SELECT stop_id, zone_id FROM gtfs_stops
+       WHERE system_id = 'septa' AND stop_id = ANY($1)`,
+      [[fromStopId, toStopId]]
+    );
+    const zoneMap = new Map(res.rows.map((r) => [r.stop_id, r.zone_id]));
+    const fromZone = zoneMap.get(fromStopId);
+    const toZone   = zoneMap.get(toStopId);
+    if (!fromZone && !toZone) return null; // zone_id not populated yet
+
+    const isWeekend = [0, 6].includes(new Date().getDay());
+    const result = computeSeptaZoneFare(fromZone, toZone, isWeekend);
+    if (!result) return null;
+
+    return {
+      price: result.price,
+      currency: "USD",
+      label: result.label,
+      transfersIncluded: 0,
+      transferDurationSec: null,
+      note: result.note,
+      source: "zone_lookup",
+    };
+  } catch (err) {
+    log?.warn({ err: err.message }, "SEPTA zone fare lookup failed");
+    return null;
+  }
+}
+
 // ─── Core fare lookup (used by planner.js too via export) ────────────────────
 
-export async function getFareForRoute(pg, system, routeId, log) {
-  const cacheKey = `${system}::${routeId}`;
+export async function getFareForRoute(pg, system, routeId, log, fromStopId = null, toStopId = null) {
+  // Cache key includes stop IDs for zone-based routes so each O/D pair is cached separately
+  const cacheKey = fromStopId && toStopId
+    ? `${system}::${routeId}::${fromStopId}::${toStopId}`
+    : `${system}::${routeId}`;
   if (fareCache.has(cacheKey)) return fareCache.get(cacheKey);
 
   if (pg) {
@@ -254,6 +346,17 @@ export async function getFareForRoute(pg, system, routeId, log) {
       );
       if (rtRes.rows.length > 0) routeType = rtRes.rows[0].route_type;
     } catch {}
+  }
+
+  // 4. SEPTA Regional Rail zone fare — computed from origin/destination stop zones.
+  //    This overrides the generic "Zone fare" fallback with a real price when both
+  //    stop IDs are known and zone_id is populated in gtfs_stops.
+  if (system === "septa" && routeType === 2 && fromStopId && toStopId && pg) {
+    const zoneFare = await getSeptaZoneFare(pg, fromStopId, toStopId, log);
+    if (zoneFare) {
+      fareCache.set(cacheKey, zoneFare);
+      return zoneFare;
+    }
   }
 
   const fare = getFallbackFare(system, routeType);

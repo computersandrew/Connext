@@ -349,10 +349,10 @@ async function importStops(pool, sysId, dir) {
     const batch = unique.slice(i, i + 500);
     const values = []; const params = []; let p = 1;
     for (const row of batch) {
-      values.push(`($${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++})`);
-      params.push(sysId, row.stop_id||"", row.stop_name||"", parseFloat(row.stop_lat||"0"), parseFloat(row.stop_lon||"0"), row.parent_station||"");
+      values.push(`($${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++})`);
+      params.push(sysId, row.stop_id||"", row.stop_name||"", parseFloat(row.stop_lat||"0"), parseFloat(row.stop_lon||"0"), row.parent_station||"", row.zone_id||null);
     }
-    await pool.query(`INSERT INTO gtfs_stops (system_id,stop_id,stop_name,stop_lat,stop_lon,parent_station) VALUES ${values.join(",")} ON CONFLICT (system_id,stop_id) DO UPDATE SET stop_name=EXCLUDED.stop_name,stop_lat=EXCLUDED.stop_lat,stop_lon=EXCLUDED.stop_lon,parent_station=EXCLUDED.parent_station`, params);
+    await pool.query(`INSERT INTO gtfs_stops (system_id,stop_id,stop_name,stop_lat,stop_lon,parent_station,zone_id) VALUES ${values.join(",")} ON CONFLICT (system_id,stop_id) DO UPDATE SET stop_name=EXCLUDED.stop_name,stop_lat=EXCLUDED.stop_lat,stop_lon=EXCLUDED.stop_lon,parent_station=EXCLUDED.parent_station,zone_id=EXCLUDED.zone_id`, params);
     inserted += batch.length;
   }
   console.log(`${inserted} imported`);
