@@ -238,6 +238,9 @@ async function getSeptaZoneFare(pg, fromStopId, toStopId, log) {
       transferDurationSec: null,
       note: result.note,
       source: "zone_lookup",
+      // Zone metadata — used by planner to detect extended trips through Center City
+      fromZone: fromZone || null,
+      toZone: toZone || null,
     };
   } catch (err) {
     log?.warn({ err: err.message }, "SEPTA zone fare lookup failed");

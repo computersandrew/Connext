@@ -90,13 +90,15 @@ export default function ResultsScreen({ route, navigation, pace }) {
           try {
             const resp = await fetch(`${API_BASE}/api/v1/stops/${system}`, { headers: { "Accept": "application/json" } });
             const data = await resp.json();
-            const depData = await api.departureStops(system);
-            const activeSet = new Set(depData.stops || []);
-            const stopsWithData = (data.stops || []).filter((s) => activeSet.has(s.stopId));
-            if (stopsWithData.length > 0) {
+            // Use all GTFS stops for planner origin search — departure-feed stop IDs
+            // use a different format than GTFS stop IDs on some systems (e.g. SEPTA rail
+            // 90xxx stops are absent from the departure feed), so filtering by activeSet
+            // would incorrectly exclude rail stops.
+            const allStops = data.stops || [];
+            if (allStops.length > 0) {
               // Try up to 10 nearest stops — the closest may be a bus stop with no
               // route to the destination, so we fall through until one works.
-              const candidates = findNearestStops(userLat, userLng, stopsWithData, 10);
+              const candidates = findNearestStops(userLat, userLng, allStops, 10);
               for (const candidate of candidates) {
                 if (candidate.stopId === destinationStopId) continue;
                 try {

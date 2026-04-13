@@ -648,9 +648,39 @@ export default async function plannerRoutes(fastify, { pg }) {
           // Single fare covers the whole trip
           totalPrice = firstFare.price;
         } else {
-          // Sum each leg (simplified — zone-based rail may vary)
-          const prices = fares.map((f) => f.price).filter((p) => p !== null);
-          totalPrice = prices.length > 0 ? prices.reduce((a, b) => a + b, 0) : null;
+          // SEPTA Regional Rail extended trip: when a multi-leg trip passes through
+          // Center City (a CC-zone stop is a shared transfer point between legs),
+          // SEPTA charges a single fare — the max of the outer-leg fares — not the sum.
+          // Detection: leg[i].toZone === "CC" AND leg[i+1].fromZone === "CC"
+          // (the zone metadata is returned by getSeptaZoneFare in fares.js).
+          const allZoneLookup = fares.every((f) => f.source === "zone_lookup");
+          let hasCCTransfer = false;
+          if (allZoneLookup && rideLegs.length > 1) {
+            for (let i = 0; i < fares.length - 1; i++) {
+              const thisToZone   = fares[i]?.toZone?.toUpperCase?.();
+              const nextFromZone = fares[i + 1]?.fromZone?.toUpperCase?.();
+              // Transfer stop is CC if either the outbound end is CC or the inbound start is CC
+              if (thisToZone === "CC" || nextFromZone === "CC") {
+                hasCCTransfer = true;
+                break;
+              }
+            }
+          }
+          if (allZoneLookup && rideLegs.length > 1) {
+            if (hasCCTransfer) {
+              // Extended trip through Center City: charge the max of the first and last
+              // outer-leg fares (the CC-segment legs are not charged separately).
+              const outerFares = [fares[0]?.price, fares[fares.length - 1]?.price].filter((p) => p !== null);
+              totalPrice = outerFares.length > 0 ? Math.max(...outerFares) : null;
+            } else {
+              const prices = fares.map((f) => f.price).filter((p) => p !== null);
+              totalPrice = prices.length > 0 ? prices.reduce((a, b) => a + b, 0) : null;
+            }
+          } else {
+            // Non-zone or single-leg: sum each leg
+            const prices = fares.map((f) => f.price).filter((p) => p !== null);
+            totalPrice = prices.length > 0 ? prices.reduce((a, b) => a + b, 0) : null;
+          }
         }
 
         const currency = firstFare.currency || "USD";

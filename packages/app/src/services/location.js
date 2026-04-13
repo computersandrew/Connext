@@ -23,7 +23,7 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 }
 
 // DEBUG: forced location — remove when done testing
-const FORCED_LOCATION = { lat: 42.3426, lng: -71.0942 }; // 137 Hemenway St, Boston
+const FORCED_LOCATION = null; // set to e.g. { lat: 42.3601, lng: -71.0589 } to override
 
 export async function getLocation() {
   if (FORCED_LOCATION) return FORCED_LOCATION;
