@@ -88,6 +88,7 @@ async function main() {
       await importTransfers(pool, sysId, extractDir);
       await importPathways(pool, sysId, extractDir);
       await importFares(pool, sysId, extractDir);
+      await importFaresV2(pool, sysId, extractDir);
 
       const counts = await getCounts(pool, sysId);
       console.log(`\n  ✅ ${config.name} import complete:`);
@@ -96,7 +97,7 @@ async function main() {
       console.log(`     Trips:     ${counts.trips}`);
       console.log(`     Transfers: ${counts.transfers}`);
       console.log(`     Pathways:  ${counts.pathways}`);
-      console.log(`     Fares:     ${counts.fares}`);
+      console.log(`     Fares:     ${counts.fares} (v1) + ${counts.fareProducts} products (v2)`);
 
     } catch (err) {
       console.error(`\n  ❌ ${config.name} import failed: ${err.message}`);
@@ -321,10 +322,10 @@ async function importRoutes(pool, sysId, dir) {
     const batch = unique.slice(i, i + 500);
     const values = []; const params = []; let p = 1;
     for (const row of batch) {
-      values.push(`($${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++})`);
-      params.push(sysId, row.route_id||"", row.route_short_name||"", row.route_long_name||"", (row.route_color||"").replace("#",""), parseInt(row.route_type||"0"));
+      values.push(`($${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++})`);
+      params.push(sysId, row.route_id||"", row.route_short_name||"", row.route_long_name||"", (row.route_color||"").replace("#",""), parseInt(row.route_type||"0"), row.network_id||null);
     }
-    await pool.query(`INSERT INTO gtfs_routes (system_id,route_id,route_short_name,route_long_name,route_color,route_type) VALUES ${values.join(",")} ON CONFLICT (system_id,route_id) DO UPDATE SET route_short_name=EXCLUDED.route_short_name,route_long_name=EXCLUDED.route_long_name,route_color=EXCLUDED.route_color,route_type=EXCLUDED.route_type`, params);
+    await pool.query(`INSERT INTO gtfs_routes (system_id,route_id,route_short_name,route_long_name,route_color,route_type,network_id) VALUES ${values.join(",")} ON CONFLICT (system_id,route_id) DO UPDATE SET route_short_name=EXCLUDED.route_short_name,route_long_name=EXCLUDED.route_long_name,route_color=EXCLUDED.route_color,route_type=EXCLUDED.route_type,network_id=EXCLUDED.network_id`, params);
     inserted += batch.length;
   }
   console.log(`${inserted} imported`);
@@ -552,28 +553,201 @@ async function importFares(pool, sysId, dir) {
   console.log(`${uniqueAttrs.length} fares, ${rules.length} rules imported`);
 }
 
+// ─── Import Fares v2 (GTFS Fares v2 — fare_products, fare_leg_rules, etc.) ───
+async function importFaresV2(pool, sysId, dir) {
+  const products = await parseCSV(join(dir, "fare_products.txt"));
+  const media    = await parseCSV(join(dir, "fare_media.txt"));
+  const legRules = await parseCSV(join(dir, "fare_leg_rules.txt"));
+  const xferRules = await parseCSV(join(dir, "fare_transfer_rules.txt"));
+  const stopAreas = await parseCSV(join(dir, "stop_areas.txt"));
+  const areas    = await parseCSV(join(dir, "areas.txt"));
+
+  if (products.length === 0 && legRules.length === 0) {
+    console.log("  ℹ  No GTFS Fares v2 files found (fare_products.txt absent)");
+    return;
+  }
+
+  process.stdout.write(`  📊 Fares v2: ${products.length} products, ${legRules.length} leg rules, ${xferRules.length} transfer rules... `);
+
+  // Ensure tables exist
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gtfs_fare_products (
+      system_id TEXT NOT NULL, fare_product_id TEXT NOT NULL,
+      fare_product_name TEXT, fare_media_id TEXT,
+      amount NUMERIC(10,2) NOT NULL, currency TEXT NOT NULL DEFAULT 'USD',
+      UNIQUE (system_id, fare_product_id, fare_media_id)
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gtfs_fare_media (
+      system_id TEXT NOT NULL, fare_media_id TEXT NOT NULL,
+      fare_media_name TEXT, fare_media_type INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (system_id, fare_media_id)
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gtfs_fare_leg_rules (
+      system_id TEXT NOT NULL, leg_group_id TEXT, network_id TEXT,
+      from_area_id TEXT, to_area_id TEXT, fare_product_id TEXT NOT NULL,
+      from_timeframe_group_id TEXT, to_timeframe_group_id TEXT, transfer_only INTEGER DEFAULT 0
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fare_leg_rules_network ON gtfs_fare_leg_rules (system_id, network_id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gtfs_fare_transfer_rules (
+      system_id TEXT NOT NULL, from_leg_group_id TEXT, to_leg_group_id TEXT,
+      transfer_count INTEGER, duration_limit INTEGER, duration_limit_type INTEGER,
+      fare_transfer_type INTEGER NOT NULL DEFAULT 0, fare_product_id TEXT, filter_fare_product_id TEXT
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gtfs_stop_areas (
+      system_id TEXT NOT NULL, stop_id TEXT NOT NULL, area_id TEXT NOT NULL,
+      PRIMARY KEY (system_id, stop_id, area_id)
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_stop_areas_system_stop ON gtfs_stop_areas (system_id, stop_id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gtfs_areas (
+      system_id TEXT NOT NULL, area_id TEXT NOT NULL, area_name TEXT,
+      PRIMARY KEY (system_id, area_id)
+    )`);
+
+  // Clear old data
+  for (const t of ["gtfs_fare_products","gtfs_fare_media","gtfs_fare_leg_rules","gtfs_fare_transfer_rules","gtfs_stop_areas","gtfs_areas"]) {
+    await pool.query(`DELETE FROM ${t} WHERE system_id = $1`, [sysId]);
+  }
+
+  // Insert fare_products
+  if (products.length > 0) {
+    for (let i = 0; i < products.length; i += 500) {
+      const batch = products.slice(i, i + 500);
+      const vals = []; const params = []; let p = 1;
+      for (const r of batch) {
+        vals.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+        params.push(sysId, r.fare_product_id||"", r.fare_product_name||null, r.fare_media_id||null, parseFloat(r.amount||"0"), r.currency||"USD");
+      }
+      await pool.query(
+        `INSERT INTO gtfs_fare_products (system_id,fare_product_id,fare_product_name,fare_media_id,amount,currency) VALUES ${vals.join(",")}
+         ON CONFLICT (system_id,fare_product_id,fare_media_id) DO UPDATE SET fare_product_name=EXCLUDED.fare_product_name, amount=EXCLUDED.amount`,
+        params
+      );
+    }
+  }
+
+  // Insert fare_media
+  if (media.length > 0) {
+    for (let i = 0; i < media.length; i += 500) {
+      const batch = media.slice(i, i + 500);
+      const vals = []; const params = []; let p = 1;
+      for (const r of batch) {
+        vals.push(`($${p++},$${p++},$${p++},$${p++})`);
+        params.push(sysId, r.fare_media_id||"", r.fare_media_name||null, parseInt(r.fare_media_type||"0"));
+      }
+      await pool.query(
+        `INSERT INTO gtfs_fare_media (system_id,fare_media_id,fare_media_name,fare_media_type) VALUES ${vals.join(",")} ON CONFLICT DO NOTHING`,
+        params
+      );
+    }
+  }
+
+  // Insert fare_leg_rules
+  if (legRules.length > 0) {
+    for (let i = 0; i < legRules.length; i += 500) {
+      const batch = legRules.slice(i, i + 500);
+      const vals = []; const params = []; let p = 1;
+      for (const r of batch) {
+        vals.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+        params.push(sysId, r.leg_group_id||null, r.network_id||null, r.from_area_id||null, r.to_area_id||null,
+          r.fare_product_id||"", r.from_timeframe_group_id||null, r.to_timeframe_group_id||null,
+          r.transfer_only ? parseInt(r.transfer_only) : 0);
+      }
+      await pool.query(
+        `INSERT INTO gtfs_fare_leg_rules (system_id,leg_group_id,network_id,from_area_id,to_area_id,fare_product_id,from_timeframe_group_id,to_timeframe_group_id,transfer_only) VALUES ${vals.join(",")}`,
+        params
+      );
+    }
+  }
+
+  // Insert fare_transfer_rules
+  if (xferRules.length > 0) {
+    for (let i = 0; i < xferRules.length; i += 500) {
+      const batch = xferRules.slice(i, i + 500);
+      const vals = []; const params = []; let p = 1;
+      for (const r of batch) {
+        vals.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+        params.push(sysId, r.from_leg_group_id||null, r.to_leg_group_id||null,
+          r.transfer_count !== "" && r.transfer_count !== undefined ? parseInt(r.transfer_count) : null,
+          r.duration_limit ? parseInt(r.duration_limit) : null,
+          r.duration_limit_type !== "" && r.duration_limit_type !== undefined ? parseInt(r.duration_limit_type) : null,
+          parseInt(r.fare_transfer_type||"0"), r.fare_product_id||null, r.filter_fare_product_id||null);
+      }
+      await pool.query(
+        `INSERT INTO gtfs_fare_transfer_rules (system_id,from_leg_group_id,to_leg_group_id,transfer_count,duration_limit,duration_limit_type,fare_transfer_type,fare_product_id,filter_fare_product_id) VALUES ${vals.join(",")}`,
+        params
+      );
+    }
+  }
+
+  // Insert stop_areas
+  if (stopAreas.length > 0) {
+    for (let i = 0; i < stopAreas.length; i += 500) {
+      const batch = stopAreas.slice(i, i + 500);
+      const vals = []; const params = []; let p = 1;
+      for (const r of batch) {
+        vals.push(`($${p++},$${p++},$${p++})`);
+        params.push(sysId, r.stop_id||"", r.area_id||"");
+      }
+      await pool.query(
+        `INSERT INTO gtfs_stop_areas (system_id,stop_id,area_id) VALUES ${vals.join(",")} ON CONFLICT DO NOTHING`,
+        params
+      );
+    }
+  }
+
+  // Insert areas
+  if (areas.length > 0) {
+    for (let i = 0; i < areas.length; i += 200) {
+      const batch = areas.slice(i, i + 200);
+      const vals = []; const params = []; let p = 1;
+      for (const r of batch) {
+        vals.push(`($${p++},$${p++},$${p++})`);
+        params.push(sysId, r.area_id||"", r.area_name||null);
+      }
+      await pool.query(
+        `INSERT INTO gtfs_areas (system_id,area_id,area_name) VALUES ${vals.join(",")} ON CONFLICT DO NOTHING`,
+        params
+      );
+    }
+  }
+
+  console.log(`imported`);
+}
+
 // ─── Counts ──────────────────────────────────────────────────────────────────
 async function getCounts(pool, sysId) {
   const tableExists = async (name) => {
     const r = await pool.query(`SELECT to_regclass($1)`, [name]);
     return r.rows[0].to_regclass !== null;
   };
-  const fareTableExists = await tableExists("gtfs_fare_attributes");
+  const [fareV1Exists, fareV2Exists] = await Promise.all([
+    tableExists("gtfs_fare_attributes"),
+    tableExists("gtfs_fare_products"),
+  ]);
 
-  const [routes, stops, trips, transfers, pathways, fares] = await Promise.all([
+  const [routes, stops, trips, transfers, pathways, fares, fareProducts] = await Promise.all([
     pool.query("SELECT COUNT(*) FROM gtfs_routes WHERE system_id = $1", [sysId]),
     pool.query("SELECT COUNT(*) FROM gtfs_stops WHERE system_id = $1", [sysId]),
     pool.query("SELECT COUNT(*) FROM gtfs_trips WHERE system_id = $1", [sysId]),
     pool.query("SELECT COUNT(*) FROM gtfs_transfers WHERE system_id = $1", [sysId]),
     pool.query("SELECT COUNT(*) FROM gtfs_pathways WHERE system_id = $1", [sysId]),
-    fareTableExists
+    fareV1Exists
       ? pool.query("SELECT COUNT(*) FROM gtfs_fare_attributes WHERE system_id = $1", [sysId])
+      : Promise.resolve({ rows: [{ count: "0" }] }),
+    fareV2Exists
+      ? pool.query("SELECT COUNT(DISTINCT fare_product_id) FROM gtfs_fare_products WHERE system_id = $1", [sysId])
       : Promise.resolve({ rows: [{ count: "0" }] }),
   ]);
   return {
     routes: parseInt(routes.rows[0].count), stops: parseInt(stops.rows[0].count),
     trips: parseInt(trips.rows[0].count), transfers: parseInt(transfers.rows[0].count),
     pathways: parseInt(pathways.rows[0].count), fares: parseInt(fares.rows[0].count),
+    fareProducts: parseInt(fareProducts.rows[0].count),
   };
 }
 

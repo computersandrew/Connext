@@ -63,17 +63,58 @@ export default async function fareRoutes(fastify, { pg }) {
     }
 
     try {
+      // Try v2 first (fare_products)
+      const v2Check = await pg.query(
+        `SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'gtfs_fare_products'`
+      );
+      if (parseInt(v2Check.rows[0].count) > 0) {
+        const v2Result = await pg.query(`
+          SELECT DISTINCT ON (fp.fare_product_id)
+            fp.fare_product_id,
+            fp.fare_product_name,
+            fp.amount,
+            fp.currency,
+            fp.fare_media_id,
+            fm.fare_media_name,
+            fm.fare_media_type,
+            flr.network_id,
+            flr.from_area_id,
+            flr.to_area_id
+          FROM gtfs_fare_products fp
+          LEFT JOIN gtfs_fare_media fm ON fm.system_id = fp.system_id AND fm.fare_media_id = fp.fare_media_id
+          LEFT JOIN gtfs_fare_leg_rules flr ON flr.system_id = fp.system_id AND flr.fare_product_id = fp.fare_product_id
+            AND (flr.transfer_only IS NULL OR flr.transfer_only = 0)
+          WHERE fp.system_id = $1 AND fp.amount > 0
+          ORDER BY fp.fare_product_id, fp.amount ASC
+        `, [system]);
+
+        if (v2Result.rows.length > 0) {
+          return {
+            system,
+            source: "gtfs_v2",
+            fares: v2Result.rows.map((r) => ({
+              fareId: r.fare_product_id,
+              name: r.fare_product_name,
+              price: parseFloat(r.amount),
+              currency: r.currency,
+              label: formatPrice(parseFloat(r.amount), r.currency),
+              paymentMethod: r.fare_media_name || r.fare_media_id || "any",
+              mediaType: r.fare_media_type,
+              network: r.network_id,
+              fromArea: r.from_area_id,
+              toArea: r.to_area_id,
+              isZoneBased: !!(r.from_area_id || r.to_area_id),
+            })),
+          };
+        }
+      }
+
+      // Fall back to v1
       const result = await pg.query(`
         SELECT
-          fa.fare_id,
-          fa.price,
-          fa.currency_type,
-          fa.payment_method,
-          fa.transfers,
-          fa.transfer_duration,
-          ARRAY_AGG(DISTINCT fr.route_id) FILTER (WHERE fr.route_id IS NOT NULL AND fr.route_id != '') AS route_ids,
-          ARRAY_AGG(DISTINCT fr.origin_id) FILTER (WHERE fr.origin_id IS NOT NULL AND fr.origin_id != '') AS origin_zones,
-          ARRAY_AGG(DISTINCT fr.destination_id) FILTER (WHERE fr.destination_id IS NOT NULL AND fr.destination_id != '') AS dest_zones
+          fa.fare_id, fa.price, fa.currency_type, fa.payment_method,
+          fa.transfers, fa.transfer_duration,
+          ARRAY_AGG(DISTINCT fr.route_id) FILTER (WHERE fr.route_id IS NOT NULL AND fr.route_id != '') AS route_ids
         FROM gtfs_fare_attributes fa
         LEFT JOIN gtfs_fare_rules fr ON fr.system_id = fa.system_id AND fr.fare_id = fa.fare_id
         WHERE fa.system_id = $1
@@ -87,7 +128,7 @@ export default async function fareRoutes(fastify, { pg }) {
 
       return {
         system,
-        source: "gtfs",
+        source: "gtfs_v1",
         fares: result.rows.map((r) => ({
           fareId: r.fare_id,
           price: parseFloat(r.price),
@@ -97,9 +138,6 @@ export default async function fareRoutes(fastify, { pg }) {
           transfers: r.transfers === null ? "unlimited" : r.transfers,
           transferDurationSec: r.transfer_duration ? parseInt(r.transfer_duration) : null,
           routeIds: r.route_ids || [],
-          originZones: r.origin_zones || [],
-          destZones: r.dest_zones || [],
-          isZoneBased: (r.origin_zones || []).length > 0 || (r.dest_zones || []).length > 0,
         })),
       };
     } catch (err) {
@@ -126,7 +164,46 @@ export async function getFareForRoute(pg, system, routeId, log) {
 
   if (pg) {
     try {
-      // 1. Try route-specific fare rule
+      // ── GTFS Fares v2: look up by network_id (modern agencies like MBTA) ──
+      // fare_leg_rules maps network_id → fare_product → price.
+      // We pick the cheapest non-transfer-only product for the route's network.
+      const v2Res = await pg.query(`
+        SELECT fp.amount, fp.currency, fp.fare_product_id, fp.fare_product_name,
+               fp.fare_media_id, gr.network_id
+        FROM gtfs_routes gr
+        JOIN gtfs_fare_leg_rules flr
+          ON flr.system_id = gr.system_id
+         AND flr.network_id = gr.network_id
+         AND (flr.transfer_only IS NULL OR flr.transfer_only = 0)
+        JOIN gtfs_fare_products fp
+          ON fp.system_id = flr.system_id
+         AND fp.fare_product_id = flr.fare_product_id
+        WHERE gr.system_id = $1 AND gr.route_id = $2
+          AND fp.amount > 0
+        ORDER BY fp.amount ASC
+        LIMIT 1
+      `, [system, routeId]);
+
+      if (v2Res.rows.length > 0) {
+        const r = v2Res.rows[0];
+        // Determine transfer policy from fare_transfer_rules for this fare product
+        const xferRes = await pg.query(`
+          SELECT transfer_count, duration_limit
+          FROM gtfs_fare_transfer_rules
+          WHERE system_id = $1
+            AND (filter_fare_product_id = $2 OR fare_product_id = $2)
+          LIMIT 1
+        `, [system, r.fare_product_id]);
+        const xfer = xferRes.rows[0];
+        const transfersIncluded = xfer
+          ? (xfer.transfer_count === null || xfer.transfer_count === -1 ? null : xfer.transfer_count)
+          : null;
+        const fare = buildFareObj(parseFloat(r.amount), r.currency, transfersIncluded, xfer?.duration_limit || null, "gtfs_v2");
+        fareCache.set(cacheKey, fare);
+        return fare;
+      }
+
+      // ── GTFS Fares v1: route-specific rule ──────────────────────────────
       const ruleRes = await pg.query(`
         SELECT fa.price, fa.currency_type, fa.transfers, fa.transfer_duration
         FROM gtfs_fare_rules fr
@@ -138,12 +215,12 @@ export async function getFareForRoute(pg, system, routeId, log) {
 
       if (ruleRes.rows.length > 0) {
         const r = ruleRes.rows[0];
-        const fare = buildFareObj(parseFloat(r.price), r.currency_type, r.transfers, r.transfer_duration, "gtfs");
+        const fare = buildFareObj(parseFloat(r.price), r.currency_type, r.transfers, r.transfer_duration, "gtfs_v1");
         fareCache.set(cacheKey, fare);
         return fare;
       }
 
-      // 2. Try flat fare (no route_id in rules = applies to all)
+      // ── GTFS Fares v1: flat fare ─────────────────────────────────────────
       const flatRes = await pg.query(`
         SELECT fa.price, fa.currency_type, fa.transfers, fa.transfer_duration
         FROM gtfs_fare_attributes fa
@@ -158,7 +235,7 @@ export async function getFareForRoute(pg, system, routeId, log) {
 
       if (flatRes.rows.length > 0) {
         const r = flatRes.rows[0];
-        const fare = buildFareObj(parseFloat(r.price), r.currency_type, r.transfers, r.transfer_duration, "gtfs");
+        const fare = buildFareObj(parseFloat(r.price), r.currency_type, r.transfers, r.transfer_duration, "gtfs_v1");
         fareCache.set(cacheKey, fare);
         return fare;
       }
