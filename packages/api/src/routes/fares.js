@@ -7,13 +7,13 @@
 import { SYSTEMS } from "../config.js";
 
 // Hardcoded fallback fares for when GTFS fare data is missing or sparse.
-// Prices are adult cash / card fares as of early 2025.
+// Prices are adult card fares as of April 2026.
 // Keys match the agency's GTFS route_type: 0=tram/streetcar, 1=subway, 2=rail, 3=bus
 // transfers: null = unlimited free transfers, number = how many free transfers included
 // transferDurationSec: how long the transfer window lasts
 const FALLBACK_FARES = {
-  // MTA NYC: flat $2.90, unlimited free transfers between subway + bus within 2h
-  mta:   { price: 2.90, currency: "USD", label: "$2.90", note: "MetroCard/OMNY", transfers: null, transferDurationSec: 7200 },
+  // MTA NYC: flat $3.00 (raised Jan 2026), unlimited free transfers subway+bus within 2h
+  mta:   { price: 3.00, currency: "USD", label: "$3.00", note: "OMNY/MetroCard", transfers: null, transferDurationSec: 7200 },
   // MBTA: fare by mode; subway-to-subway transfers are free within 2h on CharlieCard
   mbta:  {
     byType: {
@@ -24,23 +24,23 @@ const FALLBACK_FARES = {
     },
     default: { price: 2.40, currency: "USD", label: "$2.40", note: "CharlieCard", transfers: null, transferDurationSec: 7200 },
   },
-  // CTA: 2 free transfers within 2h (rail or bus)
+  // CTA: flat $2.50 for rail and bus (raised 2026), 2 free transfers within 2h
   cta:   {
     byType: {
       1: { price: 2.50, currency: "USD", label: "$2.50", note: "Ventra card", transfers: 2, transferDurationSec: 7200 },
-      3: { price: 2.25, currency: "USD", label: "$2.25", note: "Ventra card", transfers: 2, transferDurationSec: 7200 },
+      3: { price: 2.50, currency: "USD", label: "$2.50", note: "Ventra card", transfers: 2, transferDurationSec: 7200 },
     },
     default: { price: 2.50, currency: "USD", label: "$2.50", note: "Ventra card", transfers: 2, transferDurationSec: 7200 },
   },
-  // SEPTA: no free transfers (each trip charged separately)
+  // SEPTA: $2.90 bus/metro/trolley (raised Sep 2025), 2 free transfers within 2h; Regional Rail is zone-based
   septa: {
     byType: {
-      0: { price: 2.00, currency: "USD", label: "$2.00", note: "SEPTA Key", transfers: 0, transferDurationSec: null },
-      1: { price: 2.00, currency: "USD", label: "$2.00", note: "SEPTA Key", transfers: 0, transferDurationSec: null },
-      2: { price: null, currency: "USD", label: "Zone fare", note: "Varies by zone", transfers: 0, transferDurationSec: null },
-      3: { price: 2.00, currency: "USD", label: "$2.00", note: "SEPTA Key", transfers: 0, transferDurationSec: null },
+      0: { price: 2.90, currency: "USD", label: "$2.90", note: "SEPTA Key/Contactless", transfers: 2, transferDurationSec: 7200 }, // Trolley
+      1: { price: 2.90, currency: "USD", label: "$2.90", note: "SEPTA Key/Contactless", transfers: 2, transferDurationSec: 7200 }, // Subway (BSL/MFL)
+      2: { price: null, currency: "USD", label: "Zone fare", note: "Varies by zone", transfers: 0, transferDurationSec: null }, // Regional Rail
+      3: { price: 2.90, currency: "USD", label: "$2.90", note: "SEPTA Key/Contactless", transfers: 2, transferDurationSec: 7200 }, // Bus
     },
-    default: { price: 2.00, currency: "USD", label: "$2.00", note: "SEPTA Key", transfers: 0, transferDurationSec: null },
+    default: { price: 2.90, currency: "USD", label: "$2.90", note: "SEPTA Key/Contactless", transfers: 2, transferDurationSec: 7200 },
   },
   cdta:    { price: 1.50, currency: "USD", label: "$1.50", note: "Exact change / CDTA app", transfers: 1, transferDurationSec: 5400 },
   rtd:     { price: 3.00, currency: "USD", label: "$3.00", note: "Local fare", transfers: 0, transferDurationSec: null },
