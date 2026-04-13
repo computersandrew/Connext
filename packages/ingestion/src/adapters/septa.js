@@ -371,21 +371,26 @@ export default class SeptaAdapter extends BaseAdapter {
     }
   }
 
-  _normalizeVehiclePositions(_entities) {
-    // TrainView (JSON API) is the vehicle source for SEPTA — it provides richer
-    // data (consist, track, currentStop) and uses the same train numbers as
-    // the Arrivals API. Suppress GTFS-RT vehicle positions to avoid mixing
-    // GTFS trip-ID-keyed vehicles with train-number-keyed departure records.
-    return [];
-  }
-
-  _normalizeTripUpdates(_entities) {
-    // SEPTA GTFS-RT trip IDs (e.g. "WTR8352_20260329_SID185186") don't match the
-    // operational train numbers used by TrainView and the Arrivals API.
-    // Returning empty here lets the Arrivals JSON polling (which uses real train
-    // numbers) be the sole writer to departure keys, keeping tripIds consistent
-    // with the vehicle data so the live vehicle panel works correctly.
-    return [];
+  _normalizeTripUpdates(entities) {
+    const departures = [];
+    for (const { tripUpdate } of entities) {
+      const trip = tripUpdate.trip;
+      if (!trip) continue;
+      const routeInfo = this._resolveRoute(trip.routeId);
+      for (const stu of tripUpdate.stopTimeUpdate || []) {
+        if (!stu.stopId) continue;
+        const stop = this.lookup.getStop(stu.stopId);
+        const { time: departureTime, delay } = resolveStopTime(stu.departure || stu.arrival);
+        departures.push({
+          tripId: trip.tripId, routeId: trip.routeId,
+          routeName: routeInfo.name, routeColor: routeInfo.color, routeType: routeInfo.type,
+          stopId: stu.stopId, stopName: stop?.name || stu.stopId,
+          direction: trip.directionId === 0 ? "Northbound" : "Southbound",
+          departureTime, delay: delay || null, isRealtime: true,
+        });
+      }
+    }
+    return departures;
   }
 
   _normalizeVehiclePositions(entities) {
