@@ -8,6 +8,33 @@ import { API_BASE } from "../services/api";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+// Parse a TrainView consist string ("417,418,399,398") into an array of ints
+function parseConsist(consist) {
+  if (!consist) return [];
+  return String(consist).split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
+}
+
+// Heuristic fleet classification for SEPTA Regional Rail
+function classifyEquipment(nums) {
+  const hasACS64 = nums.some(n => n >= 901 && n <= 915);
+  const hasCabCar = nums.some(n => n >= 2400 && n <= 2499);
+  const coachCount = nums.filter(n => n >= 2500 && n <= 2599).length;
+
+  if (hasACS64) {
+    if (hasCabCar && coachCount >= 1) return "Push-Pull (ACS-64 + Cab + Coaches)";
+    if (coachCount >= 1) return "Push-Pull (ACS-64 + Coaches)";
+    return "Push-Pull (ACS-64)";
+  }
+
+  const hasSLV = nums.some(n => (n >= 701 && n <= 738) || (n >= 801 && n <= 882));
+  if (hasSLV) return "Silverliner V (EMU)";
+
+  const hasSLIV = nums.some(n => (n >= 101 && n <= 188) || (n >= 200 && n <= 499));
+  if (hasSLIV) return "Silverliner IV (EMU)";
+
+  return "Unknown / Mixed";
+}
+
 function kmToMi(km) {
   if (km == null) return "";
   const mi = km * 0.621371;
@@ -296,9 +323,16 @@ function DepartureDetail({ dep, system }) {
                 colors={colors}
               />
             ) : null}
-            {vehicle.consist ? (
-              <DetailRow label="Consist" value={String(vehicle.consist)} colors={colors} />
-            ) : null}
+            {vehicle.consist ? (() => {
+              const cars = parseConsist(vehicle.consist);
+              const equipType = classifyEquipment(cars);
+              return (
+                <>
+                  <DetailRow label="Equipment" value={equipType} colors={colors} />
+                  <DetailRow label={`Consist (${cars.length})`} value={cars.join(" · ")} colors={colors} />
+                </>
+              );
+            })() : null}
             {vehicle.lateMin != null ? (
               <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
                 <Text style={{ color: colors.textMuted, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.6, marginTop: 1 }}>On Time</Text>
