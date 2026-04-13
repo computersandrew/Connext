@@ -235,7 +235,7 @@ export default function ResultsScreen({ route, navigation, pace }) {
               backgroundColor: colors.card, borderRadius: radius.xl, padding: 20,
               marginBottom: 12, borderWidth: 1, borderColor: colors.cardBorder,
             }}>
-              {/* Time + probability */}
+              {/* Time + fare + probability */}
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
                 <View style={{ flexDirection: "row", alignItems: "baseline", gap: 4 }}>
                   <Text style={{ fontSize: 28, fontWeight: "700", color: colors.text, fontVariant: ["tabular-nums"], letterSpacing: -1 }}>
@@ -248,7 +248,19 @@ export default function ResultsScreen({ route, navigation, pace }) {
                     </Text>
                   )}
                 </View>
-                <ProbBadge probability={rt.overallProbability} />
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  {rt.fare?.label ? (
+                    <View style={{
+                      paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10,
+                      backgroundColor: colors.cardBorder,
+                    }}>
+                      <Text style={{ color: colors.textSecondary, fontSize: 13, fontWeight: "600" }}>
+                        {rt.fare.label}
+                      </Text>
+                    </View>
+                  ) : null}
+                  <ProbBadge probability={rt.overallProbability} />
+                </View>
               </View>
 
               {/* Leg visualization */}
@@ -303,7 +315,7 @@ export default function ResultsScreen({ route, navigation, pace }) {
 
               {/* Leave by */}
               {rt.leaveBy && (
-                <Text style={{ fontSize: 12, color: colors.textMuted, marginTop: 6 }}>
+                <Text style={{ fontSize: 13, color: colors.textSecondary, fontWeight: "600", marginTop: 8 }}>
                   Leave by {new Date(rt.leaveBy).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
                 </Text>
               )}

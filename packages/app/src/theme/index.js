@@ -6,14 +6,14 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 const THEME_STORAGE_KEY = "connext_theme";
 
 export const darkColors = {
-  bg: "#141419",
-  card: "#1c1c24",
-  cardBorder: "#26262f",
-  cardActive: "#32323e",
-  text: "#ededf0",
-  textSecondary: "#8a8a99",
-  textMuted: "#555566",
-  accent: "#ededf0",
+  bg: "#000000",
+  card: "#111111",
+  cardBorder: "#1e1e1e",
+  cardActive: "#242424",
+  text: "#f5f5f5",
+  textSecondary: "#888888",
+  textMuted: "#444444",
+  accent: "#f5f5f5",
   green: "#34d399",
   yellow: "#fbbf24",
   red: "#f87171",
