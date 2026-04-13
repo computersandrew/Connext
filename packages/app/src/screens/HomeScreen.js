@@ -1,6 +1,7 @@
 // src/screens/HomeScreen.js
 import { useState, useEffect, useRef, useCallback } from "react";
 import { View, Text, TextInput, Pressable, Keyboard, ActivityIndicator, Animated, LayoutAnimation, Platform, UIManager } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useTheme, spacing, fontSize, radius } from "../theme";
 import { api } from "../services/api";
 import { getLocation, detectSystem } from "../services/location";
@@ -26,6 +27,7 @@ export default function HomeScreen({ navigation, userName, pace }) {
   const [focused, setFocused] = useState(false);
   const [detectedSystem, setDetectedSystem] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
+  const [appMode, setAppMode] = useState("connection");
   const inputRef = useRef(null);
   const debounceRef = useRef(null);
   const greetingOpacity = useRef(new Animated.Value(1)).current;
@@ -40,7 +42,16 @@ export default function HomeScreen({ navigation, userName, pace }) {
         setDetectedSystem(sys);
       }
     })();
+    AsyncStorage.getItem("connext_mode").then((v) => {
+      if (v === "timetable" || v === "connection") setAppMode(v);
+    }).catch(() => {});
   }, []);
+
+  const handleModeChange = (m) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setAppMode(m);
+    AsyncStorage.setItem("connext_mode", m).catch(() => {});
+  };
 
   // Animate greeting when focused
   useEffect(() => {
@@ -89,7 +100,7 @@ export default function HomeScreen({ navigation, userName, pace }) {
     setFocused(false);
     navigation.navigate("Results", {
       system: item.system, destinationStopId: item.stopId, destinationName: item.name,
-      userLat: userLocation?.lat, userLng: userLocation?.lng, pace,
+      userLat: userLocation?.lat, userLng: userLocation?.lng, pace, appMode,
     });
   };
 
@@ -110,18 +121,50 @@ export default function HomeScreen({ navigation, userName, pace }) {
 
         {/* Greeting */}
         <Animated.View style={{ opacity: greetingOpacity, transform: [{ scale: greetingScale }], marginBottom: focused ? 20 : 0 }}>
-          <Text style={{
-            fontSize: 32, fontWeight: "700", color: colors.text,
-            letterSpacing: -0.8, marginBottom: 6,
-          }}>
+          <Text style={{ fontSize: 32, fontWeight: "700", color: colors.text, letterSpacing: -0.8, marginBottom: 6 }}>
             {getGreeting(userName)}
           </Text>
           {!focused && (
-            <Text style={{ fontSize: 16, color: colors.textSecondary, letterSpacing: 0.2, marginBottom: 36 }}>
+            <Text style={{ fontSize: 16, color: colors.textSecondary, letterSpacing: 0.2, marginBottom: 28 }}>
               Where are you headed?
             </Text>
           )}
         </Animated.View>
+
+        {/* Mode Toggle */}
+        {!focused && (
+          <View style={{
+            flexDirection: "row",
+            backgroundColor: colors.card,
+            borderRadius: radius.lg,
+            borderWidth: 1,
+            borderColor: colors.cardBorder,
+            padding: 3,
+            marginBottom: 16,
+          }}>
+            {[
+              { id: "connection", label: "Connection" },
+              { id: "timetable", label: "Timetable" },
+            ].map((m) => (
+              <Pressable
+                key={m.id}
+                onPress={() => handleModeChange(m.id)}
+                style={{
+                  flex: 1, paddingVertical: 10, alignItems: "center",
+                  borderRadius: radius.md - 2,
+                  backgroundColor: appMode === m.id ? colors.accent : "transparent",
+                }}
+              >
+                <Text style={{
+                  color: appMode === m.id ? colors.bg : colors.textSecondary,
+                  fontWeight: "600", fontSize: 14, letterSpacing: 0.2,
+                }}>
+                  {m.label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
 
         {/* Search */}
         <View style={{
@@ -149,14 +192,14 @@ export default function HomeScreen({ navigation, userName, pace }) {
 
         {/* System badge */}
         {!focused && detectedSystem && (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 16, justifyContent: "center" }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 14, justifyContent: "center" }}>
             <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: systemDot[detectedSystem.id] }} />
             <Text style={{ color: colors.textMuted, fontSize: 12, letterSpacing: 0.3 }}>Searching {detectedSystem.name}</Text>
           </View>
         )}
 
         {!focused && !detectedSystem && (
-          <Text style={{ color: colors.textMuted, fontSize: 12, letterSpacing: 0.3, textAlign: "center", marginTop: 16 }}>
+          <Text style={{ color: colors.textMuted, fontSize: 12, letterSpacing: 0.3, textAlign: "center", marginTop: 14 }}>
             Searching all systems
           </Text>
         )}
