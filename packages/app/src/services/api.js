@@ -1,7 +1,7 @@
 // src/services/api.js
 // On web, use the same host as the page (works for localhost preview and LAN).
 // On native (iOS/Android), fall back to the configured LAN IP.
-const NATIVE_IP = "129.161.144.193";
+const NATIVE_IP = "129.161.196.39";
 const _isWeb = typeof window !== "undefined" && typeof document !== "undefined";
 const _apiHost = _isWeb ? window.location.hostname : NATIVE_IP;
 const API_BASE = `http://${_apiHost}:3000`;
@@ -69,6 +69,9 @@ export const api = {
     if (opts.lng != null) params.set("lng", opts.lng.toFixed(6));
     return get(`/api/v1/plan/${system}?${params}`);
   },
+
+  fares: (system) => get(`/api/v1/fares/${system}`),
+  fareForRoute: (system, routeId) => get(`/api/v1/fares/${system}/route/${encodeURIComponent(routeId)}`),
 
   transfer: (system, fromStop, toStop) =>
     get(`/api/v1/transfer/${system}/${fromStop}/${toStop}`),

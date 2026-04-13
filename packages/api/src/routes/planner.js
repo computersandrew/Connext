@@ -1,5 +1,6 @@
 // packages/api/src/routes/planner.js
 import { SYSTEMS } from "../config.js";
+import { getFareForRoute } from "./fares.js";
 
 const engines = new Map();
 
@@ -601,6 +602,57 @@ export default async function plannerRoutes(fastify, { pg }) {
       } catch (err) {
         fastify.log.debug({ err: err.message }, "Extended walk query failed");
       }
+    }
+
+    // ─── Attach fare estimates to every route ─────────────────────────────────
+    // Collect unique route IDs across all built routes, fetch fares in parallel,
+    // then annotate each route with a totalFare field.
+    try {
+      const allRouteIds = [...new Set(
+        routes.flatMap((r) => r.legs.filter((l) => l.type === "ride").map((l) => l.routeId))
+      )];
+      const fareMap = new Map();
+      await Promise.all(allRouteIds.map(async (rid) => {
+        const f = await getFareForRoute(pg, system, rid, fastify.log);
+        fareMap.set(rid, f);
+      }));
+
+      for (const route of routes) {
+        const rideLegs = route.legs.filter((l) => l.type === "ride");
+        if (rideLegs.length === 0) { route.fare = null; continue; }
+
+        // Compute total fare: if transfers are included (unlimited or count ≥ legs-1),
+        // charge only the first leg; otherwise sum each leg's fare.
+        const fares = rideLegs.map((l) => fareMap.get(l.routeId)).filter(Boolean);
+        if (fares.length === 0) { route.fare = null; continue; }
+
+        const firstFare = fares[0];
+        const transfersFree = firstFare.transfersIncluded === "unlimited" ||
+          (typeof firstFare.transfersIncluded === "number" && firstFare.transfersIncluded >= rideLegs.length - 1);
+
+        let totalPrice;
+        if (transfersFree) {
+          // Single fare covers the whole trip
+          totalPrice = firstFare.price;
+        } else {
+          // Sum each leg (simplified — zone-based rail may vary)
+          const prices = fares.map((f) => f.price).filter((p) => p !== null);
+          totalPrice = prices.length > 0 ? prices.reduce((a, b) => a + b, 0) : null;
+        }
+
+        const currency = firstFare.currency || "USD";
+        route.fare = {
+          price: totalPrice !== null ? Math.round(totalPrice * 100) / 100 : null,
+          currency,
+          label: totalPrice !== null
+            ? new Intl.NumberFormat("en-US", { style: "currency", currency }).format(totalPrice)
+            : fares.some((f) => f.label === "Zone fare" || f.label === "Varies") ? "Zone fare" : null,
+          transfersFree,
+          source: firstFare.source,
+        };
+      }
+    } catch (err) {
+      fastify.log.debug({ err: err.message }, "Fare annotation failed (non-fatal)");
     }
 
     // Sort and deduplicate

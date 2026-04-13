@@ -87,6 +87,7 @@ async function main() {
       await importTrips(pool, sysId, extractDir);
       await importTransfers(pool, sysId, extractDir);
       await importPathways(pool, sysId, extractDir);
+      await importFares(pool, sysId, extractDir);
 
       const counts = await getCounts(pool, sysId);
       console.log(`\n  ✅ ${config.name} import complete:`);
@@ -95,6 +96,7 @@ async function main() {
       console.log(`     Trips:     ${counts.trips}`);
       console.log(`     Transfers: ${counts.transfers}`);
       console.log(`     Pathways:  ${counts.pathways}`);
+      console.log(`     Fares:     ${counts.fares}`);
 
     } catch (err) {
       console.error(`\n  ❌ ${config.name} import failed: ${err.message}`);
@@ -463,19 +465,115 @@ async function importPathways(pool, sysId, dir) {
   return inserted;
 }
 
+// ─── Import Fares ─────────────────────────────────────────────────────────────
+async function importFares(pool, sysId, dir) {
+  const attrPath = join(dir, "fare_attributes.txt");
+  const rulesPath = join(dir, "fare_rules.txt");
+  const attrs = await parseCSV(attrPath);
+  const rules = await parseCSV(rulesPath);
+
+  if (attrs.length === 0) {
+    console.log("  ℹ  fare_attributes.txt not found (hardcoded fallback fares will be used)");
+    return;
+  }
+
+  process.stdout.write(`  📊 Fares: ${attrs.length} products, ${rules.length} rules... `);
+
+  // Ensure tables exist (idempotent — safe to run even if schema already applied)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gtfs_fare_attributes (
+      system_id TEXT NOT NULL, fare_id TEXT NOT NULL, price NUMERIC(10,2) NOT NULL,
+      currency_type TEXT NOT NULL DEFAULT 'USD', payment_method INTEGER DEFAULT 0,
+      transfers INTEGER, transfer_duration INTEGER,
+      PRIMARY KEY (system_id, fare_id)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gtfs_fare_rules (
+      system_id TEXT NOT NULL, fare_id TEXT NOT NULL,
+      route_id TEXT, origin_id TEXT, destination_id TEXT, contains_id TEXT
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fare_rules_system_route ON gtfs_fare_rules (system_id, route_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fare_rules_system_fare ON gtfs_fare_rules (system_id, fare_id)`);
+
+  await pool.query("DELETE FROM gtfs_fare_attributes WHERE system_id = $1", [sysId]);
+  await pool.query("DELETE FROM gtfs_fare_rules WHERE system_id = $1", [sysId]);
+
+  // Insert fare attributes
+  const seenFares = new Set();
+  const uniqueAttrs = attrs.filter((r) => { if (seenFares.has(r.fare_id)) return false; seenFares.add(r.fare_id); return true; });
+  for (let i = 0; i < uniqueAttrs.length; i += 500) {
+    const batch = uniqueAttrs.slice(i, i + 500);
+    const values = []; const params = []; let p = 1;
+    for (const row of batch) {
+      values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+      params.push(
+        sysId, row.fare_id || "",
+        parseFloat(row.price || "0"),
+        row.currency_type || "USD",
+        parseInt(row.payment_method || "0"),
+        row.transfers !== "" && row.transfers !== undefined ? parseInt(row.transfers) : null,
+        row.transfer_duration ? parseInt(row.transfer_duration) : null,
+      );
+    }
+    await pool.query(
+      `INSERT INTO gtfs_fare_attributes (system_id,fare_id,price,currency_type,payment_method,transfers,transfer_duration)
+       VALUES ${values.join(",")}
+       ON CONFLICT (system_id,fare_id) DO UPDATE SET
+         price=EXCLUDED.price, currency_type=EXCLUDED.currency_type,
+         payment_method=EXCLUDED.payment_method, transfers=EXCLUDED.transfers,
+         transfer_duration=EXCLUDED.transfer_duration`,
+      params
+    );
+  }
+
+  // Insert fare rules
+  if (rules.length > 0) {
+    for (let i = 0; i < rules.length; i += 500) {
+      const batch = rules.slice(i, i + 500);
+      const values = []; const params = []; let p = 1;
+      for (const row of batch) {
+        values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+        params.push(
+          sysId, row.fare_id || "",
+          row.route_id || null, row.origin_id || null,
+          row.destination_id || null, row.contains_id || null,
+        );
+      }
+      await pool.query(
+        `INSERT INTO gtfs_fare_rules (system_id,fare_id,route_id,origin_id,destination_id,contains_id)
+         VALUES ${values.join(",")}`,
+        params
+      );
+    }
+  }
+
+  console.log(`${uniqueAttrs.length} fares, ${rules.length} rules imported`);
+}
+
 // ─── Counts ──────────────────────────────────────────────────────────────────
 async function getCounts(pool, sysId) {
-  const [routes, stops, trips, transfers, pathways] = await Promise.all([
+  const tableExists = async (name) => {
+    const r = await pool.query(`SELECT to_regclass($1)`, [name]);
+    return r.rows[0].to_regclass !== null;
+  };
+  const fareTableExists = await tableExists("gtfs_fare_attributes");
+
+  const [routes, stops, trips, transfers, pathways, fares] = await Promise.all([
     pool.query("SELECT COUNT(*) FROM gtfs_routes WHERE system_id = $1", [sysId]),
     pool.query("SELECT COUNT(*) FROM gtfs_stops WHERE system_id = $1", [sysId]),
     pool.query("SELECT COUNT(*) FROM gtfs_trips WHERE system_id = $1", [sysId]),
     pool.query("SELECT COUNT(*) FROM gtfs_transfers WHERE system_id = $1", [sysId]),
     pool.query("SELECT COUNT(*) FROM gtfs_pathways WHERE system_id = $1", [sysId]),
+    fareTableExists
+      ? pool.query("SELECT COUNT(*) FROM gtfs_fare_attributes WHERE system_id = $1", [sysId])
+      : Promise.resolve({ rows: [{ count: "0" }] }),
   ]);
   return {
     routes: parseInt(routes.rows[0].count), stops: parseInt(stops.rows[0].count),
     trips: parseInt(trips.rows[0].count), transfers: parseInt(transfers.rows[0].count),
-    pathways: parseInt(pathways.rows[0].count),
+    pathways: parseInt(pathways.rows[0].count), fares: parseInt(fares.rows[0].count),
   };
 }
 
