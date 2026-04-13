@@ -275,20 +275,46 @@ function DepartureDetail({ dep, system }) {
               Live Vehicle
             </Text>
             {vehicle.vehicleId != null ? (
-              <DetailRow label="Vehicle #" value={String(vehicle.vehicleId)} colors={colors} />
+              <DetailRow label="Train #" value={String(vehicle.vehicleId)} colors={colors} />
+            ) : null}
+            {vehicle.service ? (
+              <DetailRow label="Service" value={vehicle.service} colors={colors} />
+            ) : null}
+            {vehicle.source && vehicle.dest ? (
+              <DetailRow label="Route" value={`${vehicle.source} → ${vehicle.dest}`} colors={colors} />
+            ) : null}
+            {vehicle.currentStop ? (
+              <DetailRow label="At" value={String(vehicle.currentStop)} colors={colors} />
+            ) : null}
+            {vehicle.nextStop ? (
+              <DetailRow label="Next Stop" value={String(vehicle.nextStop)} colors={colors} />
+            ) : null}
+            {vehicle.track ? (
+              <DetailRow
+                label="Track"
+                value={vehicle.trackChange ? `${vehicle.track} ⚠ changed` : String(vehicle.track)}
+                colors={colors}
+              />
+            ) : null}
+            {vehicle.consist ? (
+              <DetailRow label="Consist" value={String(vehicle.consist)} colors={colors} />
+            ) : null}
+            {vehicle.lateMin != null ? (
+              <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                <Text style={{ color: colors.textMuted, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.6, marginTop: 1 }}>On Time</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                  <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: vehicle.lateMin > 0 ? colors.yellow : colors.green }} />
+                  <Text style={{ color: vehicle.lateMin > 0 ? colors.yellow : colors.green, fontSize: 13, fontWeight: "600" }}>
+                    {vehicle.lateMin > 0 ? `+${vehicle.lateMin} min late` : "On time"}
+                  </Text>
+                </View>
+              </View>
             ) : null}
             {speedMph !== null && speedMph >= 0 ? (
               <DetailRow label="Speed" value={`${speedMph} mph`} colors={colors} />
             ) : null}
-            {vehicle.stopId ? (
-              <DetailRow label="Next Stop" value={String(vehicle.stopId)} colors={colors} />
-            ) : null}
-            {vehicle.status ? (
-              <DetailRow
-                label="Status"
-                value={vehicle.status === "IN_TRANSIT" ? "In transit" : vehicle.status === "STOPPED_AT" ? "Stopped at station" : vehicle.status}
-                colors={colors}
-              />
+            {vehicle.bearing != null ? (
+              <DetailRow label="Heading" value={`${Math.round(vehicle.bearing)}°`} colors={colors} />
             ) : null}
             {vehicle.lat != null && vehicle.lng != null ? (
               <DetailRow
@@ -296,9 +322,6 @@ function DepartureDetail({ dep, system }) {
                 value={`${vehicle.lat.toFixed(4)}°, ${vehicle.lng.toFixed(4)}°`}
                 colors={colors}
               />
-            ) : null}
-            {vehicle.bearing != null ? (
-              <DetailRow label="Bearing" value={`${vehicle.bearing}°`} colors={colors} />
             ) : null}
           </View>
         )}

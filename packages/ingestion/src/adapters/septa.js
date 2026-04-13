@@ -120,7 +120,7 @@ export default class SeptaAdapter extends BaseAdapter {
       const routeInfo = this._resolveRoute(train.line || "RR");
       const delay = this._parseDelay(train.late);
 
-      // Vehicle position
+      // Vehicle position — store all available TrainView fields
       if (train.lat && train.lon) {
         vehicles.push({
           vehicleId: String(train.trainno || ""),
@@ -129,10 +129,24 @@ export default class SeptaAdapter extends BaseAdapter {
           routeName: train.line || "Regional Rail",
           lat: parseFloat(train.lat),
           lng: parseFloat(train.lon),
-          bearing: null,
+          bearing: train.heading != null ? parseFloat(train.heading) : null,
           speed: null,
+          // Next / current stop
           stopId: train.nextstop || null,
-          status: train.late > 0 ? "IN_TRANSIT" : "IN_TRANSIT",
+          currentStop: train.currentstop || null,
+          nextStop: train.nextstop || null,
+          // Service type and endpoints
+          service: train.service || null,       // "LOCAL" / "EXPRESS"
+          source: train.SOURCE || null,         // originating station
+          dest: train.dest || null,             // terminating station
+          // Track info
+          track: train.TRACK || null,
+          trackChange: train.TRACK_CHANGE || null,
+          // Car consist (list of car numbers as string)
+          consist: train.consist || null,
+          // Delay (minutes from TrainView "late" field)
+          lateMin: train.late != null ? Number(train.late) : 0,
+          status: "IN_TRANSIT",
           timestamp: Date.now() / 1000,
         });
       }
