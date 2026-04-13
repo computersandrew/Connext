@@ -189,7 +189,10 @@ export default async function plannerRoutes(fastify, { pg }) {
           transferInfo._bufferSec = bufferSec;  // carry through for display
         }
 
-        const totalSec = walkSec + ride1Sec + transferInfo.transferTime + ride2Sec;
+        // Use actual schedule buffer (real gap to next departure) for elapsed-time accuracy.
+        // transferTime = minimum physical transfer time; _bufferSec = actual scheduled wait.
+        const actualWait1 = transferInfo._bufferSec ?? transferInfo.transferTime;
+        const totalSec = walkSec + ride1Sec + actualWait1 + ride2Sec;
 
         routes.push({
           id: `transfer-${row.route1}-${row.route2}-${row.transfer_rep}`,
@@ -437,7 +440,9 @@ export default async function plannerRoutes(fastify, { pg }) {
             xfer2Info._bufferSec = buf2;
           }
 
-          const totalSec = walkSec + ride1Sec + xfer1Info.transferTime + ride2Sec + xfer2Info.transferTime + ride3Sec;
+          const actualWait1 = xfer1Info._bufferSec ?? xfer1Info.transferTime;
+          const actualWait2 = xfer2Info._bufferSec ?? xfer2Info.transferTime;
+          const totalSec = walkSec + ride1Sec + actualWait1 + ride2Sec + actualWait2 + ride3Sec;
           const overallProb = xfer1Info.probability * xfer2Info.probability;
 
           return {

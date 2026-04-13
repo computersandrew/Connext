@@ -480,6 +480,14 @@ export default function ResultsScreen({ route, navigation, pace }) {
 
           {mode === "planner" && routes.map((rt, ri) => {
             const isExpanded = expandedRoute === ri;
+            // Compute actual elapsed time from the timeline so it matches
+            // the expanded itinerary (accounts for real scheduled wait at transfers).
+            const _tl = buildTimeline(rt);
+            const _firstMs = _tl[0]?.startMs;
+            const _lastMs = _tl[_tl.length - 1]?.endMs;
+            const displayMin = (_firstMs && _lastMs)
+              ? Math.round((_lastMs - _firstMs) / 60000)
+              : rt.totalTimeMin;
             return (
               <Pressable
                 key={rt.id || ri}
@@ -494,7 +502,7 @@ export default function ResultsScreen({ route, navigation, pace }) {
                 <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
                   <View style={{ flexDirection: "row", alignItems: "baseline", gap: 4 }}>
                     <Text style={{ fontSize: 28, fontWeight: "700", color: colors.text, fontVariant: ["tabular-nums"], letterSpacing: -1 }}>
-                      {rt.totalTimeMin}
+                      {displayMin}
                     </Text>
                     <Text style={{ fontSize: 14, color: colors.textSecondary, marginLeft: 2 }}>min</Text>
                     {rt.transfers > 0 && (
