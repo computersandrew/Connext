@@ -83,6 +83,20 @@ function TickingCountdown({ departureTime }) {
   if (sec <= 0) return <Text style={{ fontSize: 15, fontWeight: "800", color: colors.red, letterSpacing: 0.5 }}>NOW</Text>;
   const min = Math.floor(sec / 60);
   const remSec = sec % 60;
+
+  if (sec > 3600) {
+    const hrs = Math.floor(sec / 3600);
+    const remMin = Math.floor((sec % 3600) / 60);
+    return (
+      <View style={{ alignItems: "flex-end" }}>
+        <Text style={{ fontSize: 18, fontWeight: "700", color: urgencyColor(sec, colors), fontVariant: ["tabular-nums"] }}>
+          {hrs}h {remMin}m
+        </Text>
+        <Text style={{ fontSize: 10, color: colors.textMuted, marginTop: 1 }}>away</Text>
+      </View>
+    );
+  }
+
   return (
     <View style={{ alignItems: "flex-end" }}>
       <Text style={{ fontSize: sec <= 60 ? 24 : 20, fontWeight: "700", color: urgencyColor(sec, colors), fontVariant: ["tabular-nums"] }}>
