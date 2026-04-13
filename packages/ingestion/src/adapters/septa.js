@@ -40,6 +40,17 @@ let KEY_STATIONS = [
   "69th Street Transportation Center",
 ];
 
+// Haversine distance in metres between two lat/lng points
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6_371_000;
+  const toRad = (d) => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2
+          + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 export default class SeptaAdapter extends BaseAdapter {
   static adapterId = "septa";
 
@@ -47,6 +58,9 @@ export default class SeptaAdapter extends BaseAdapter {
     super(config, deps);
     this.lookup = new RouteLookup();
     this._jsonTimers = [];
+    // Keyed by trainno — stores { lat, lng, timestamp } from the previous poll
+    // so we can derive speed from position deltas.
+    this._prevPositions = new Map();
   }
 
   async onStart() {
@@ -83,8 +97,8 @@ export default class SeptaAdapter extends BaseAdapter {
   // ═══════════════════════════════════════════════════════════════════════════
 
   _startJsonPolling() {
-    // TrainView — all regional rail trains, every 30s
-    this._pollJson("trainView", () => this._fetchTrainView(), 30_000);
+    // TrainView — all regional rail trains, every 15s (faster for speed calculation)
+    this._pollJson("trainView", () => this._fetchTrainView(), 15_000);
 
     // TransitView — subway/trolley vehicle positions, every 30s
     this._pollJson("transitView", () => this._fetchTransitView(), 30_000);
@@ -122,15 +136,45 @@ export default class SeptaAdapter extends BaseAdapter {
 
       // Vehicle position — store all available TrainView fields
       if (train.lat && train.lon) {
+        const nowSec = Date.now() / 1000;
+        const trainId = String(train.trainno || "");
+        const lat = parseFloat(train.lat);
+        const lng = parseFloat(train.lon);
+
+        // Derive speed (m/s) from position delta since last poll
+        let speed = null;
+        const prev = this._prevPositions.get(trainId);
+        if (prev) {
+          const dtSec = nowSec - prev.timestamp;
+          if (dtSec > 1 && dtSec < 120) {  // sane window: >1s and <2 min
+            const distM = haversineMeters(prev.lat, prev.lng, lat, lng);
+            const rawSpeed = distM / dtSec;  // m/s
+            // Clamp to realistic rail speeds (0–90 m/s ≈ 0–200 mph) and
+            // apply light EMA smoothing to damp GPS jitter
+            if (rawSpeed <= 90) {
+              speed = prev.speed != null
+                ? 0.4 * rawSpeed + 0.6 * prev.speed   // EMA α=0.4
+                : rawSpeed;
+            } else {
+              speed = prev.speed ?? null;  // reject outlier, keep last good value
+            }
+          } else {
+            speed = prev.speed ?? null;  // gap too large, carry forward
+          }
+        }
+
+        // Update previous-position cache for next poll
+        this._prevPositions.set(trainId, { lat, lng, timestamp: nowSec, speed });
+
         vehicles.push({
-          vehicleId: String(train.trainno || ""),
-          tripId: String(train.trainno || ""),
+          vehicleId: trainId,
+          tripId: trainId,
           routeId: train.line || "RR",
           routeName: train.line || "Regional Rail",
-          lat: parseFloat(train.lat),
-          lng: parseFloat(train.lon),
+          lat,
+          lng,
           bearing: train.heading != null ? parseFloat(train.heading) : null,
-          speed: null,
+          speed,                                // m/s, null on first poll
           // Next / current stop
           stopId: train.nextstop || null,
           currentStop: train.currentstop || null,
@@ -147,7 +191,7 @@ export default class SeptaAdapter extends BaseAdapter {
           // Delay (minutes from TrainView "late" field)
           lateMin: train.late != null ? Number(train.late) : 0,
           status: "IN_TRANSIT",
-          timestamp: Date.now() / 1000,
+          timestamp: nowSec,
         });
       }
 
