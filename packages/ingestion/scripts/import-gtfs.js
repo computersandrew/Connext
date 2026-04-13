@@ -555,12 +555,31 @@ async function importFares(pool, sysId, dir) {
 
 // ─── Import Fares v2 (GTFS Fares v2 — fare_products, fare_leg_rules, etc.) ───
 async function importFaresV2(pool, sysId, dir) {
-  const products = await parseCSV(join(dir, "fare_products.txt"));
-  const media    = await parseCSV(join(dir, "fare_media.txt"));
-  const legRules = await parseCSV(join(dir, "fare_leg_rules.txt"));
-  const xferRules = await parseCSV(join(dir, "fare_transfer_rules.txt"));
-  const stopAreas = await parseCSV(join(dir, "stop_areas.txt"));
-  const areas    = await parseCSV(join(dir, "areas.txt"));
+  const products    = await parseCSV(join(dir, "fare_products.txt"));
+  const media       = await parseCSV(join(dir, "fare_media.txt"));
+  const legRules    = await parseCSV(join(dir, "fare_leg_rules.txt"));
+  const xferRules   = await parseCSV(join(dir, "fare_transfer_rules.txt"));
+  const stopAreas   = await parseCSV(join(dir, "stop_areas.txt"));
+  const areas       = await parseCSV(join(dir, "areas.txt"));
+  const networks    = await parseCSV(join(dir, "networks.txt"));
+
+  // route_networks.txt maps route_id → network_id (used by RTD, Bustang instead of
+  // embedding network_id in routes.txt). Apply these to gtfs_routes after routes are imported.
+  const routeNetworks = await parseCSV(join(dir, "route_networks.txt"));
+  if (routeNetworks.length > 0) {
+    process.stdout.write(`  📊 Route networks: ${routeNetworks.length} mappings... `);
+    for (let i = 0; i < routeNetworks.length; i += 500) {
+      const batch = routeNetworks.slice(i, i + 500);
+      for (const row of batch) {
+        if (!row.route_id || !row.network_id) continue;
+        await pool.query(
+          `UPDATE gtfs_routes SET network_id = $1 WHERE system_id = $2 AND route_id = $3`,
+          [row.network_id, sysId, row.route_id]
+        );
+      }
+    }
+    console.log(`applied`);
+  }
 
   if (products.length === 0 && legRules.length === 0) {
     console.log("  ℹ  No GTFS Fares v2 files found (fare_products.txt absent)");
@@ -711,6 +730,28 @@ async function importFaresV2(pool, sysId, dir) {
       }
       await pool.query(
         `INSERT INTO gtfs_areas (system_id,area_id,area_name) VALUES ${vals.join(",")} ON CONFLICT DO NOTHING`,
+        params
+      );
+    }
+  }
+
+  // Insert networks (explicit networks.txt — RTD/Bustang)
+  if (networks.length > 0) {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS gtfs_networks (
+        system_id TEXT NOT NULL, network_id TEXT NOT NULL, network_name TEXT,
+        PRIMARY KEY (system_id, network_id)
+      )`);
+    await pool.query(`DELETE FROM gtfs_networks WHERE system_id = $1`, [sysId]);
+    for (let i = 0; i < networks.length; i += 200) {
+      const batch = networks.slice(i, i + 200);
+      const vals = []; const params = []; let p = 1;
+      for (const r of batch) {
+        vals.push(`($${p++},$${p++},$${p++})`);
+        params.push(sysId, r.network_id||"", r.network_name||null);
+      }
+      await pool.query(
+        `INSERT INTO gtfs_networks (system_id,network_id,network_name) VALUES ${vals.join(",")} ON CONFLICT DO NOTHING`,
         params
       );
     }
