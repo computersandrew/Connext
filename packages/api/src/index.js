@@ -39,6 +39,7 @@ import departureRoutes from "./routes/departures.js";
 import plannerRoutes from "./routes/planner.js";
 import stopRoutes from "./routes/stops.js";
 import fareRoutes from "./routes/fares.js";
+import vehicleRoutes from "./routes/vehicles.js";
 // WebSocket handlers
 import alertsWs, { getWsClientCount } from "./ws/alerts.js";
 
@@ -93,6 +94,7 @@ async function start() {
   await app.register(alertsWs);
   await app.register(stopRoutes, { pg: pgPool });
   await app.register(fareRoutes, { pg: pgPool });
+  await app.register(vehicleRoutes);
 
   // ─── Root endpoint ───────────────────────────────────────────────────
   app.get("/", async () => ({

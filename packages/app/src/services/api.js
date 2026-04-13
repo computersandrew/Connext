@@ -73,6 +73,9 @@ export const api = {
   fares: (system) => get(`/api/v1/fares/${system}`),
   fareForRoute: (system, routeId) => get(`/api/v1/fares/${system}/route/${encodeURIComponent(routeId)}`),
 
+  vehicles: (system) => get(`/api/v1/vehicles/${system}`),
+  vehicleByTrip: (system, tripId) => get(`/api/v1/vehicles/${system}/trip/${encodeURIComponent(tripId)}`),
+
   transfer: (system, fromStop, toStop) =>
     get(`/api/v1/transfer/${system}/${fromStop}/${toStop}`),
 };

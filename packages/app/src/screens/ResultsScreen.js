@@ -188,16 +188,30 @@ function RouteDetail({ route, stopNames }) {
 }
 
 // Expanded detail for a departure row (timetable mode)
-function DepartureDetail({ dep }) {
+function DepartureDetail({ dep, system }) {
   const { colors } = useTheme();
   const statusColor = dep.delay && dep.delay > 60 ? colors.yellow : colors.green;
   const delayMin = dep.delay ? Math.round(dep.delay / 60) : 0;
+  const [vehicle, setVehicle] = useState(null);
+  const [vehicleLoading, setVehicleLoading] = useState(false);
+
+  useEffect(() => {
+    if (!dep.tripId || !system) return;
+    setVehicleLoading(true);
+    api.vehicleByTrip(system, dep.tripId)
+      .then((data) => setVehicle(data.vehicle || null))
+      .catch(() => setVehicle(null))
+      .finally(() => setVehicleLoading(false));
+  }, [dep.tripId, system]);
+
+  // Speed stored as m/s from GTFS-RT; convert to mph
+  const speedMph = vehicle?.speed != null ? Math.round(vehicle.speed * 2.23694) : null;
 
   return (
     <View style={{ marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.cardBorder }}>
       <View style={{ gap: 7 }}>
         {dep.tripId ? (
-          <DetailRow label="Trip" value={dep.tripId} colors={colors} />
+          <DetailRow label="Trip" value={String(dep.tripId)} colors={colors} />
         ) : null}
         <DetailRow label="Route" value={dep.routeName || dep.routeId} colors={colors} />
         {dep.direction ? (
@@ -229,6 +243,51 @@ function DepartureDetail({ dep }) {
             </Text>
           </View>
         </View>
+
+        {/* Live vehicle position section */}
+        {vehicleLoading && (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 6 }}>
+            <ActivityIndicator size="small" color={colors.textMuted} />
+            <Text style={{ color: colors.textMuted, fontSize: 12 }}>Loading vehicle data…</Text>
+          </View>
+        )}
+        {vehicle && !vehicleLoading && (
+          <View style={{
+            marginTop: 10, paddingTop: 10,
+            borderTopWidth: 1, borderTopColor: colors.cardBorder,
+            gap: 7,
+          }}>
+            <Text style={{ fontSize: 11, color: colors.accent, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 2 }}>
+              Live Vehicle
+            </Text>
+            {vehicle.vehicleId != null ? (
+              <DetailRow label="Vehicle #" value={String(vehicle.vehicleId)} colors={colors} />
+            ) : null}
+            {speedMph !== null && speedMph >= 0 ? (
+              <DetailRow label="Speed" value={`${speedMph} mph`} colors={colors} />
+            ) : null}
+            {vehicle.stopId ? (
+              <DetailRow label="Next Stop" value={String(vehicle.stopId)} colors={colors} />
+            ) : null}
+            {vehicle.status ? (
+              <DetailRow
+                label="Status"
+                value={vehicle.status === "IN_TRANSIT" ? "In transit" : vehicle.status === "STOPPED_AT" ? "Stopped at station" : vehicle.status}
+                colors={colors}
+              />
+            ) : null}
+            {vehicle.lat != null && vehicle.lng != null ? (
+              <DetailRow
+                label="Position"
+                value={`${vehicle.lat.toFixed(4)}°, ${vehicle.lng.toFixed(4)}°`}
+                colors={colors}
+              />
+            ) : null}
+            {vehicle.bearing != null ? (
+              <DetailRow label="Bearing" value={`${vehicle.bearing}°`} colors={colors} />
+            ) : null}
+          </View>
+        )}
       </View>
     </View>
   );
@@ -541,7 +600,7 @@ export default function ResultsScreen({ route, navigation, pace }) {
                 </View>
 
                 {/* ─── Expanded departure detail ─── */}
-                {isExpanded && <DepartureDetail dep={dep} />}
+                {isExpanded && <DepartureDetail dep={dep} system={system} />}
               </Pressable>
             );
           })}
