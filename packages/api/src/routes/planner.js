@@ -91,6 +91,7 @@ export default async function plannerRoutes(fastify, { pg }) {
               type: "ride", routeId: row.route_id,
               routeName: routeInfo.name, routeColor: routeInfo.color,
               from, to, durationSec: rideSec, durationMin: Math.round(rideSec / 60),
+              fromStopId: fromStops[0] || null, toStopId: toStops[0] || null,
               direction: "", isRealtime: false,
             },
           ],
@@ -205,6 +206,7 @@ export default async function plannerRoutes(fastify, { pg }) {
               routeName: route1Info.name, routeColor: route1Info.color,
               from, to: row.transfer_rep,
               durationSec: ride1Sec, durationMin: Math.round(ride1Sec / 60),
+              fromStopId: fromStops[0] || null, toStopId: row.stops_r1[0] || null,
               direction: "", isRealtime: false,
             },
             {
@@ -225,6 +227,7 @@ export default async function plannerRoutes(fastify, { pg }) {
               routeName: route2Info.name, routeColor: route2Info.color,
               from: row.transfer_rep, to,
               durationSec: ride2Sec, durationMin: Math.round(ride2Sec / 60),
+              fromStopId: row.stops_r2[0] || null, toStopId: toStops[0] || null,
               direction: "", isRealtime: false,
             },
           ],
@@ -452,6 +455,7 @@ export default async function plannerRoutes(fastify, { pg }) {
                 routeName: r1Info.name, routeColor: r1Info.color,
                 from, to: row.t1_rep,
                 durationSec: ride1Sec, durationMin: Math.round(ride1Sec / 60),
+                fromStopId: fromStops[0] || null, toStopId: row.t1_stops_r1[0] || null,
                 direction: "", isRealtime: false,
               },
               {
@@ -470,6 +474,7 @@ export default async function plannerRoutes(fastify, { pg }) {
                 routeName: r2Info.name, routeColor: r2Info.color,
                 from: row.t1_rep, to: row.t2_rep,
                 durationSec: ride2Sec, durationMin: Math.round(ride2Sec / 60),
+                fromStopId: row.t1_stops_r2[0] || null, toStopId: row.t2_stops_r2[0] || null,
                 direction: "", isRealtime: false,
               },
               {
@@ -488,6 +493,7 @@ export default async function plannerRoutes(fastify, { pg }) {
                 routeName: r3Info.name, routeColor: r3Info.color,
                 from: row.t2_rep, to,
                 durationSec: ride3Sec, durationMin: Math.round(ride3Sec / 60),
+                fromStopId: row.t2_stops_r3[0] || null, toStopId: toStops[0] || null,
                 direction: "", isRealtime: false,
               },
             ],
@@ -593,6 +599,8 @@ export default async function plannerRoutes(fastify, { pg }) {
                 to,
                 durationSec: rideSec,
                 durationMin: Math.round(rideSec / 60),
+                fromStopId: row.stop_id,
+                toStopId: toStops[0] || null,
                 direction: "",
                 isRealtime: false,
               },
@@ -605,16 +613,21 @@ export default async function plannerRoutes(fastify, { pg }) {
     }
 
     // ─── Attach fare estimates to every route ─────────────────────────────────
-    // Collect unique route IDs across all built routes, fetch fares in parallel,
-    // then annotate each route with a totalFare field.
+    // Collect unique (routeId, fromStopId, toStopId) tuples across all routes.
+    // Zone-based fares (SEPTA Regional Rail) need origin+destination to compute
+    // the correct price, so each unique O/D pair is fetched and cached separately.
     try {
-      const allRouteIds = [...new Set(
-        routes.flatMap((r) => r.legs.filter((l) => l.type === "ride").map((l) => l.routeId))
-      )];
+      const allRideLegs = routes.flatMap((r) => r.legs.filter((l) => l.type === "ride"));
+      // Deduplicate by composite key
+      const uniqueLegKeys = new Map();
+      for (const l of allRideLegs) {
+        const key = `${l.routeId}::${l.fromStopId || ""}::${l.toStopId || ""}`;
+        if (!uniqueLegKeys.has(key)) uniqueLegKeys.set(key, l);
+      }
       const fareMap = new Map();
-      await Promise.all(allRouteIds.map(async (rid) => {
-        const f = await getFareForRoute(pg, system, rid, fastify.log);
-        fareMap.set(rid, f);
+      await Promise.all([...uniqueLegKeys.entries()].map(async ([key, l]) => {
+        const f = await getFareForRoute(pg, system, l.routeId, fastify.log, l.fromStopId, l.toStopId);
+        fareMap.set(key, f);
       }));
 
       for (const route of routes) {
@@ -623,7 +636,7 @@ export default async function plannerRoutes(fastify, { pg }) {
 
         // Compute total fare: if transfers are included (unlimited or count ≥ legs-1),
         // charge only the first leg; otherwise sum each leg's fare.
-        const fares = rideLegs.map((l) => fareMap.get(l.routeId)).filter(Boolean);
+        const fares = rideLegs.map((l) => fareMap.get(`${l.routeId}::${l.fromStopId || ""}::${l.toStopId || ""}`)).filter(Boolean);
         if (fares.length === 0) { route.fare = null; continue; }
 
         const firstFare = fares[0];
