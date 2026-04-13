@@ -28,10 +28,12 @@ export default function HomeScreen({ navigation, userName, pace }) {
   const [detectedSystem, setDetectedSystem] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
   const [appMode, setAppMode] = useState("connection");
+  const [toggleWidth, setToggleWidth] = useState(0);
   const inputRef = useRef(null);
   const debounceRef = useRef(null);
   const greetingOpacity = useRef(new Animated.Value(1)).current;
   const greetingScale = useRef(new Animated.Value(1)).current;
+  const slideAnim = useRef(new Animated.Value(0)).current; // 0 = ConneXtion, 1 = Timetable
 
   useEffect(() => {
     (async () => {
@@ -43,12 +45,20 @@ export default function HomeScreen({ navigation, userName, pace }) {
       }
     })();
     AsyncStorage.getItem("connext_mode").then((v) => {
-      if (v === "timetable" || v === "connection") setAppMode(v);
+      if (v === "timetable" || v === "connection") {
+        setAppMode(v);
+        if (v === "timetable") slideAnim.setValue(1);
+      }
     }).catch(() => {});
   }, []);
 
   const handleModeChange = (m) => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    Animated.spring(slideAnim, {
+      toValue: m === "timetable" ? 1 : 0,
+      useNativeDriver: true,
+      tension: 180,
+      friction: 18,
+    }).start();
     setAppMode(m);
     AsyncStorage.setItem("connext_mode", m).catch(() => {});
   };
@@ -131,29 +141,47 @@ export default function HomeScreen({ navigation, userName, pace }) {
           )}
         </Animated.View>
 
-        {/* Mode Toggle */}
+        {/* Mode Toggle — sliding pill */}
         {!focused && (
-          <View style={{
-            flexDirection: "row",
-            backgroundColor: colors.card,
-            borderRadius: radius.lg,
-            borderWidth: 1,
-            borderColor: colors.cardBorder,
-            padding: 3,
-            marginBottom: 16,
-          }}>
+          <View
+            onLayout={(e) => setToggleWidth(e.nativeEvent.layout.width)}
+            style={{
+              flexDirection: "row",
+              backgroundColor: colors.card,
+              borderRadius: radius.lg,
+              borderWidth: 1,
+              borderColor: colors.cardBorder,
+              padding: 3,
+              marginBottom: 16,
+              position: "relative",
+            }}
+          >
+            {/* Animated sliding pill */}
+            {toggleWidth > 0 && (
+              <Animated.View
+                style={{
+                  position: "absolute",
+                  top: 3, bottom: 3, left: 3,
+                  width: (toggleWidth - 6) / 2,
+                  borderRadius: radius.md - 2,
+                  backgroundColor: colors.accent,
+                  transform: [{
+                    translateX: slideAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, (toggleWidth - 6) / 2],
+                    }),
+                  }],
+                }}
+              />
+            )}
             {[
-              { id: "connection", label: "Connection" },
+              { id: "connection", label: "ConneXtion" },
               { id: "timetable", label: "Timetable" },
             ].map((m) => (
               <Pressable
                 key={m.id}
                 onPress={() => handleModeChange(m.id)}
-                style={{
-                  flex: 1, paddingVertical: 10, alignItems: "center",
-                  borderRadius: radius.md - 2,
-                  backgroundColor: appMode === m.id ? colors.accent : "transparent",
-                }}
+                style={{ flex: 1, paddingVertical: 10, alignItems: "center", zIndex: 1 }}
               >
                 <Text style={{
                   color: appMode === m.id ? colors.bg : colors.textSecondary,
