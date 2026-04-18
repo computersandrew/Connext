@@ -114,8 +114,8 @@ export default function HomeScreen({ navigation, userName, pace }) {
     });
   };
 
-  const systemLabel = { mta: "MTA", mbta: "MBTA", cta: "CTA", septa: "SEPTA" };
-  const systemDot = { mta: "#EE352E", mbta: "#DA291C", cta: "#00A1DE", septa: "#F58220" };
+  const systemLabel = { mta: "MTA", mbta: "MBTA", cta: "CTA", septa: "SEPTA", lametro: "LA Metro" };
+  const systemDot = { mta: "#EE352E", mbta: "#DA291C", cta: "#00A1DE", septa: "#F58220", lametro: "#0072BC" };
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
