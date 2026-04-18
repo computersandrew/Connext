@@ -154,6 +154,29 @@ export const SYSTEMS = {
       refreshDays: 14,
     },
   },
+
+  lametro: {
+    id: "lametro",
+    name: "LA Metro Rail",
+    city: "Los Angeles",
+    region: { lat: 34.0522, lng: -118.2437, radiusKm: 60 },
+    enabled: true,
+    adapter: "lametro",
+    feeds: {
+      // LA Metro real-time is served via a proprietary JSON REST API.
+      // GTFS-RT protobuf feeds can be added here if Metro ever publishes them.
+      tripUpdates: [],
+      vehiclePositions: [],
+      alerts: [],
+    },
+    auth: { type: "none" },
+    intervals: { tripUpdates: 30000, vehiclePositions: 15000, alerts: 60000 },
+    staticGtfs: {
+      // Rail-only GTFS (A/B/C/D/E/K/L/J lines)
+      url: "https://gitlab.com/LACMTA/gtfs_rail/-/raw/master/gtfs_rail.zip",
+      refreshDays: 14,
+    },
+  },
 };
 
 // Global config

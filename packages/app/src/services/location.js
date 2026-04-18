@@ -10,6 +10,7 @@ const SYSTEM_REGIONS = [
   { id: "cdta",    name: "CDTA",            lat: 42.6526, lng: -73.7562,  radiusKm: 70  },
   { id: "rtd",     name: "RTD Denver",      lat: 39.7392, lng: -104.9903, radiusKm: 60  },
   { id: "bustang", name: "Bustang",         lat: 39.5501, lng: -105.7821, radiusKm: 300 },
+  { id: "lametro", name: "LA Metro Rail",   lat: 34.0522, lng: -118.2437, radiusKm: 60  },
 ];
 
 function haversineKm(lat1, lon1, lat2, lon2) {
@@ -22,11 +23,7 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// DEBUG: forced location — remove when done testing
-const FORCED_LOCATION = null; // set to e.g. { lat: 42.3601, lng: -71.0589 } to override
-
 export async function getLocation() {
-  if (FORCED_LOCATION) return FORCED_LOCATION;
   try {
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== "granted") return null;
@@ -66,15 +63,6 @@ export function findNearestStop(lat, lng, stops) {
   }
 
   return nearest ? { ...nearest, distanceKm: nearestDist } : null;
-}
-
-// Return the N nearest stops sorted by distance, so callers can try fallbacks.
-export function findNearestStops(lat, lng, stops, n = 5) {
-  const withDist = stops
-    .filter((s) => s.lat && s.lon)
-    .map((s) => ({ ...s, distanceKm: haversineKm(lat, lng, s.lat, s.lon) }));
-  withDist.sort((a, b) => a.distanceKm - b.distanceKm);
-  return withDist.slice(0, n);
 }
 
 export { SYSTEM_REGIONS };
